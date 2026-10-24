@@ -54,7 +54,12 @@ class ControlChannelClient(
             isConnected = true
             onLog("✔ Terhubung ke Saluran Kontrol Desay SV (Port $targetPort)!")
 
-            // 1. Inisialisasi Device Info & Resolusi Layar ke Speedometer (Channel 7, Msg 41)
+            // 1. Inisialisasi Status Kesiapan Smartphone ke Speedometer (Channel 1, Msg 1)
+            val phoneStatus = """{"msg_id":"DS_MSG_PHONE_STATUS","status":"READY","stream_port":${AppConfig.defaultVideoPort},"version":"1.0"}""".toByteArray(Charsets.UTF_8)
+            sendPacket(channelId = 1, msgId = 1.toShort(), body = phoneStatus)
+            onLog("► Mengirim Status HP READY ke Speedometer (Ch 1, Msg 1)")
+
+            // 2. Inisialisasi Device Info & Resolusi Layar ke Speedometer (Channel 7, Msg 41)
             val devInfo = """{"size":"960x360"}""".toByteArray(Charsets.UTF_8)
             sendPacket(channelId = 7, msgId = 41.toShort(), body = devInfo)
             onLog("► Mengirim Deklarasi Resolusi 960x360 ke Speedometer (Ch 7, Msg 41)")
@@ -195,13 +200,21 @@ class ControlChannelClient(
     fun sendShowSignal() {
         val showPayload = """{"code":0}""".toByteArray(Charsets.UTF_8)
         sendPacket(channelId = 7, msgId = 1.toShort(), body = showPayload)
-        onLog("► Mengirim MapProjectionSignal SHOW ke Speedometer (Ch 7, Msg 1)")
+
+        val respShow = """{"msg_id":"DS_RESP_SHOW","result":0,"status":"STREAMING"}""".toByteArray(Charsets.UTF_8)
+        sendPacket(channelId = 1, msgId = 2.toShort(), body = respShow)
+
+        onLog("► Mengirim MapProjectionSignal SHOW ke Speedometer (Ch 7, Msg 1 & Ch 1, Msg 2)")
     }
 
     fun sendHideSignal() {
         val hidePayload = """{"code":0}""".toByteArray(Charsets.UTF_8)
         sendPacket(channelId = 7, msgId = 2.toShort(), body = hidePayload)
-        onLog("► Mengirim MapProjectionSignal HIDE ke Speedometer (Ch 7, Msg 2)")
+
+        val respHide = """{"msg_id":"DS_RESP_HIDE","result":0}""".toByteArray(Charsets.UTF_8)
+        sendPacket(channelId = 1, msgId = 2.toShort(), body = respHide)
+
+        onLog("► Mengirim MapProjectionSignal HIDE ke Speedometer (Ch 7, Msg 2 & Ch 1, Msg 2)")
     }
 
     fun disconnect() {

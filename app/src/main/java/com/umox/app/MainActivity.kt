@@ -96,10 +96,22 @@ class MainActivity : AppCompatActivity() {
                 startService(serviceIntent)
             }
 
-            btnStartStream.text = "Hentikan Stream Layar"
+            btnStartStream.text = "⏹ Hentikan Android Auto"
             btnStartStream.setBackgroundColor(ContextCompat.getColor(this, R.color.neon_red))
-            tvStreamBadge.text = "STREAMING (960x360)"
+            tvStreamBadge.text = "ANDROID AUTO (960x360)"
             tvStreamBadge.setTextColor(ContextCompat.getColor(this, R.color.neon_green))
+
+            // Bawa antarmuka Android Auto langsung ke layar depan HP
+            try {
+                val launchIntent = packageManager.getLaunchIntentForPackage("com.andrerinas.headunitrevived")
+                if (launchIntent != null) {
+                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                    startActivity(launchIntent)
+                    log("★ Menampilkan Android Auto Google Maps di layar depan HP...")
+                }
+            } catch (e: Exception) {
+                log("Info: Buka aplikasi OpenHeadunit untuk kontrol layar interaktif.")
+            }
         } else {
             log("Izin rekam layar dibatalkan.")
         }
@@ -323,7 +335,7 @@ class MainActivity : AppCompatActivity() {
         btnTestPattern.setOnClickListener {
             if (!ScreenCastService.isStreamingActive) {
                 val ip = etTargetIp.text.toString().trim().ifEmpty { AppConfig.defaultClusterIp }
-                log("🚀 Meluncurkan Pure Android Auto HUD (960x360) ke $ip (Video: 9528, Ctrl: 9527)...")
+                log("🎮 Meluncurkan Standalone Cockpit HUD (960x360) ke $ip (Video: 9528, Ctrl: 9527)...")
 
                 val serviceIntent = Intent(this, ScreenCastService::class.java).apply {
                     action = ScreenCastService.ACTION_START_PATTERN
@@ -338,9 +350,9 @@ class MainActivity : AppCompatActivity() {
                     startService(serviceIntent)
                 }
 
-                btnTestPattern.text = "⏹ Hentikan Android Auto HUD"
+                btnTestPattern.text = "⏹ Hentikan HUD"
                 btnTestPattern.setBackgroundColor(ContextCompat.getColor(this, R.color.neon_red))
-                tvStreamBadge.text = "AUTO HUD (960x360)"
+                tvStreamBadge.text = "HUD COCKPIT"
                 tvStreamBadge.setTextColor(ContextCompat.getColor(this, R.color.neon_cyan))
             } else {
                 val stopIntent = Intent(this, ScreenCastService::class.java).apply {
@@ -348,9 +360,9 @@ class MainActivity : AppCompatActivity() {
                 }
                 startService(stopIntent)
 
-                btnTestPattern.text = "🚀 Launch Pure Android Auto HUD (960x360)"
-                btnTestPattern.setBackgroundColor(ContextCompat.getColor(this, R.color.neon_cyan))
-                btnStartStream.text = "Mulai Stream Layar (Maps)"
+                btnTestPattern.text = "🎮 Standalone HUD"
+                btnTestPattern.setBackgroundColor(ContextCompat.getColor(this, R.color.surface_card_elevated))
+                btnStartStream.text = "🚀 1-KLIK ANDROID AUTO KE SPEEDOMETER"
                 btnStartStream.setBackgroundColor(ContextCompat.getColor(this, R.color.neon_green))
                 tvStreamBadge.text = "STANDBY"
                 tvStreamBadge.setTextColor(ContextCompat.getColor(this, R.color.neon_amber))
@@ -359,7 +371,24 @@ class MainActivity : AppCompatActivity() {
 
         btnStartStream.setOnClickListener {
             if (!ScreenCastService.isStreamingActive) {
-                // Minta izin rekam layar
+                log("🚀 Menyiapkan 1-Klik Android Auto ke Speedometer...")
+
+                // 1. Memicu aktivasi Google Android Auto Engine (Self Mode)
+                try {
+                    val aaIntent = Intent("com.andrerinas.openheadunit.ACTION_START_SELF_MODE").apply {
+                        setPackage("com.andrerinas.headunitrevived")
+                        component = android.content.ComponentName(
+                            "com.andrerinas.headunitrevived",
+                            "com.andrerinas.openheadunit.automation.AutomationReceiver"
+                        )
+                    }
+                    sendBroadcast(aaIntent)
+                    log("✔ Mengirim perintah Start Self-Mode ke Android Auto Engine.")
+                } catch (e: Exception) {
+                    log("Peringatan inisialisasi Android Auto: ${e.message}")
+                }
+
+                // 2. Minta izin rekam layar untuk memproyeksikan H.264 video ke Port 9528
                 screenCaptureLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
             } else {
                 // Hentikan streaming
@@ -368,10 +397,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 startService(stopIntent)
 
-                btnStartStream.text = "Mulai Stream Layar (Maps)"
+                btnStartStream.text = "🚀 1-KLIK ANDROID AUTO KE SPEEDOMETER"
                 btnStartStream.setBackgroundColor(ContextCompat.getColor(this, R.color.neon_green))
-                btnTestPattern.text = "⚡ Test Cast Gambar HUD (Tanpa Rekam Layar)"
-                btnTestPattern.setBackgroundColor(ContextCompat.getColor(this, R.color.neon_cyan))
+                btnTestPattern.text = "🎮 Standalone HUD"
+                btnTestPattern.setBackgroundColor(ContextCompat.getColor(this, R.color.surface_card_elevated))
                 tvStreamBadge.text = "STANDBY"
                 tvStreamBadge.setTextColor(ContextCompat.getColor(this, R.color.neon_amber))
             }
