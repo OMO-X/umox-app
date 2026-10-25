@@ -120,21 +120,26 @@ class MainActivity : AppCompatActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val allGranted = permissions.entries.all { it.value }
-        if (allGranted) {
-            log("✔ Izin Bluetooth & Wi-Fi aktif.")
-            startAutoRadar()
-        } else {
-            log("⚠ Beberapa izin ditolak oleh sistem.")
-        }
+        val grantedCount = permissions.values.count { it }
+        log("✔ Izin sistem diperbarui ($grantedCount/${permissions.size} aktif).")
+        startAutoRadar()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        AppConfig.loadFromPreferences(this)
         initViews()
         initModules()
+
+        if (AppConfig.targetBleMac.isNotBlank()) {
+            log("★ Memuat target BLE tersimpan: ${AppConfig.targetBleMac}")
+        }
+        if (AppConfig.targetP2pMac.isNotBlank()) {
+            log("★ Memuat target Wi-Fi Direct tersimpan: ${AppConfig.targetP2pMac}")
+        }
+
         checkPermissions()
         setupListeners()
     }
@@ -220,6 +225,7 @@ class MainActivity : AppCompatActivity() {
                         if (item.isCandidate) {
                             tvMetricBle.text = item.name.ifEmpty { item.address }
                             log("★ [KANDIDAT OTOMOTIF] ${item.name} (${item.address}) RSSI: ${item.rssi} dBm")
+                            AppConfig.saveBleMac(this@MainActivity, item.address)
                             // Auto-connect ke BLE motor untuk langsung membaca data
                             gattExplorer.connectAndExplore(item.device)
                         } else {
@@ -247,6 +253,9 @@ class MainActivity : AppCompatActivity() {
             },
             onConnectionInfo = { info, group ->
                 runOnUiThread {
+                    group?.owner?.deviceAddress?.let { p2pMac ->
+                        AppConfig.saveP2pMac(this@MainActivity, p2pMac)
+                    }
                     info.groupOwnerAddress?.hostAddress?.let { ip ->
                         etTargetIp.setText(ip)
                         tvMetricIp.text = ip

@@ -83,6 +83,7 @@ class WifiP2pProbe(
                             for (dev in deviceList) {
                                 val isMotor = (targetMac.isNotBlank() && dev.deviceAddress.equals(targetMac, ignoreCase = true)) ||
                                         AppConfig.matchesTargetP2pMac(dev.deviceAddress) ||
+                                        AppConfig.matchesCandidateOui(dev.deviceAddress) ||
                                         dev.deviceName.contains("OMO", ignoreCase = true) ||
                                         dev.deviceName.contains("DIRECT-OMO", ignoreCase = true) ||
                                         AppConfig.matchesCandidateName(dev.deviceName)
@@ -90,6 +91,8 @@ class WifiP2pProbe(
                                 onLog("• P2P Peer: ${dev.deviceName} (${dev.deviceAddress}) [${dev.status}] ${if (isMotor) "★ MOTOR OMOWAY!" else ""}")
                                 if (isMotor && targetFound == null) {
                                     targetFound = dev
+                                    targetMac = dev.deviceAddress
+                                    AppConfig.saveP2pMac(context, dev.deviceAddress)
                                 }
                             }
                             onPeersDiscovered(deviceList)
@@ -151,6 +154,13 @@ class WifiP2pProbe(
 
     @SuppressLint("MissingPermission")
     fun connectToMotor(macAddress: String = targetMac) {
+        val effectiveMac = macAddress.ifBlank { targetMac.ifBlank { AppConfig.targetP2pMac } }
+        if (effectiveMac.isBlank()) {
+            onLog("Target MAC Wi-Fi Direct belum tersedia. Menjalankan pencarian peers...")
+            discoverPeers()
+            return
+        }
+
         if (isGroupConnected) {
             onLog("Sudah terhubung ke grup Wi-Fi Direct motor. Memperbarui informasi...")
             checkConnectionState()
@@ -158,12 +168,12 @@ class WifiP2pProbe(
         }
 
         val config = WifiP2pConfig().apply {
-            deviceAddress = macAddress
+            deviceAddress = effectiveMac
             wps.setup = WpsInfo.PBC
             groupOwnerIntent = 0 // HP bertindak sebagai Client (bukan Group Owner)
         }
 
-        onLog("Mengirim permintaan koneksi ke $macAddress...")
+        onLog("Mengirim permintaan koneksi ke $effectiveMac...")
         manager?.connect(channel, config, object : WifiP2pManager.ActionListener {
             override fun onSuccess() {
                 onLog("✔ Permintaan sambungan Wi-Fi Direct berhasil dikirim!")

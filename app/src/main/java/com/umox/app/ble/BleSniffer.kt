@@ -54,7 +54,8 @@ class BleSniffer(
             val hasVdlmUuid = uuids.any { it.contains("fff0", ignoreCase = true) }
             val isCandidate = hasVdlmUuid ||
                     AppConfig.matchesCandidateName(name) ||
-                    AppConfig.matchesTargetBleMac(address)
+                    AppConfig.matchesTargetBleMac(address) ||
+                    AppConfig.matchesCandidateOui(address)
 
             val item = BleDeviceItem(
                 device = device,

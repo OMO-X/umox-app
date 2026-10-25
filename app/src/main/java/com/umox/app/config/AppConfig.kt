@@ -1,11 +1,20 @@
 package com.umox.app.config
 
+import android.content.Context
+import android.content.SharedPreferences
+
 /**
  * Konfigurasi umum jaringan, keamanan, dan identitas perangkat cluster motor.
  * Seluruh variabel di bawah ini bersifat umum dan dapat disesuaikan (configurable)
  * sesuai dengan spesifikasi dan identitas hardware masing-masing kendaraan.
+ * Nilai spesifik perangkat disimpan secara lokal di SharedPreferences HP agar aman
+ * dan tidak ter-commit ke repositori publik.
  */
 object AppConfig {
+
+    private const val PREFS_NAME = "umox_prefs"
+    private const val KEY_BLE_MAC = "pref_target_ble_mac"
+    private const val KEY_P2P_MAC = "pref_target_p2p_mac"
 
     /**
      * Target MAC Address Wi-Fi Direct (P2P).
@@ -53,6 +62,49 @@ object AppConfig {
     )
 
     /**
+     * OUI prefix MAC address hardware vendor speedometer (Desay SV / Omoway).
+     */
+    val candidateOuis: List<String> = listOf(
+        "68:12:68",
+        "dc:0d:30"
+    )
+
+    /**
+     * Memuat target MAC yang tersimpan di HP.
+     */
+    fun loadFromPreferences(context: Context) {
+        val sp = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val savedBle = sp.getString(KEY_BLE_MAC, "") ?: ""
+        val savedP2p = sp.getString(KEY_P2P_MAC, "") ?: ""
+        if (savedBle.isNotBlank()) targetBleMac = savedBle
+        if (savedP2p.isNotBlank()) targetP2pMac = savedP2p
+    }
+
+    /**
+     * Menyimpan target MAC BLE ke penyimpanan lokal HP (tidak pernah ter-commit ke git).
+     */
+    fun saveBleMac(context: Context, mac: String) {
+        if (mac.isBlank()) return
+        targetBleMac = mac.trim().uppercase()
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_BLE_MAC, targetBleMac)
+            .apply()
+    }
+
+    /**
+     * Menyimpan target MAC P2P ke penyimpanan lokal HP (tidak pernah ter-commit ke git).
+     */
+    fun saveP2pMac(context: Context, mac: String) {
+        if (mac.isBlank()) return
+        targetP2pMac = mac.trim().uppercase()
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_P2P_MAC, targetP2pMac)
+            .apply()
+    }
+
+    /**
      * Memeriksa apakah nama perangkat cocok dengan salah satu kata kunci kandidat cluster.
      */
     fun matchesCandidateName(name: String?): Boolean {
@@ -75,6 +127,15 @@ object AppConfig {
     fun matchesTargetP2pMac(address: String?): Boolean {
         if (address.isNullOrBlank() || targetP2pMac.isBlank()) return false
         return address.equals(targetP2pMac.trim(), ignoreCase = true)
+    }
+
+    /**
+     * Memeriksa apakah MAC address cocok dengan OUI pabrikan cluster speedometer.
+     */
+    fun matchesCandidateOui(address: String?): Boolean {
+        if (address.isNullOrBlank()) return false
+        val clean = address.trim().lowercase()
+        return candidateOuis.any { clean.startsWith(it) }
     }
 
     /**
