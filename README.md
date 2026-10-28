@@ -1,67 +1,108 @@
-# UMOX (Unofficial Omoway OMO X App)
+# UMOX Auto 2.0 (Unofficial Omoway OMO X App)
 
-> **UMOX** = **U**nofficial O**m**oway **O**MO **X** App
+> **UMOX Auto 2.0** — Native Wireless Android Auto & Hardware GPU Stream Bridge untuk Speedometer Cerdas **OMOWAY (Desay SV Linux Cluster `960×360`)**
 
-**UMOX** adalah aplikasi Android Native (Kotlin) ringan yang dikembangkan sebagai pengganti aplikasi resmi OMOWAY untuk ekosistem kendaraan cerdas (Desay SV / Omoway hardware). 
-
-Proyek ini dibangun untuk mengatasi masalah konsumsi daya dan *overheating* ekstrem dari aplikasi resmi, serta menyediakan jembatan (*bridge*) untuk memproyeksikan **Google Maps / Waze / Android Auto** menggantikan peta AMap ke layar speedometer kendaraan.
+**UMOX** adalah aplikasi Android Native (Kotlin) ultra-ringan yang dirancang untuk menggantikan aplikasi bawaan OMOWAY yang berat dan terbatas pada peta AMap (Tiongkok). Dengan **UMOX Auto 2.0**, Anda dapat langsung memproyeksikan **Android Auto (Google Maps, Waze, Spotify, YouTube Music)** maupun **Mirroring Layar HP** ke layar speedometer motor OMOWAY secara *full wireless* tanpa memerlukan aplikasi pihak ketiga seperti Open Head Unit.
 
 ---
 
-## 🚀 Fitur Utama UMOX
+## ⚡ Keunggulan & Arsitektur UMOX Auto 2.0
 
-1. **BLE Hardware Radar & Sniffer**
-   * Memindai sinyal Bluetooth Low Energy (BLE) di sekitar kendaraan tanpa membebani CPU.
-   * Filter cerdas untuk mendeteksi modul *Desay SV, Omoway, DDKA, CMP, dan Speedometer*.
-   * Ekstraksi Raw Manufacturer Data, RSSI sinyal, dan Service UUIDs.
-2. **GATT Explorer**
-   * Menginspeksi struktur service GATT dan karakteristik komunikasi BLE kendaraan.
-3. **Wi-Fi Direct (P2P) Probe**
-   * Mendeteksi koneksi Wi-Fi Direct saat berkomunikasi dengan speedometer.
-   * Menangkap status Group Owner dan IP address speedometer (biasanya `192.168.49.1`).
-4. **Automotive Stream Port Scanner**
-   * Memindai port video dan telemetri lokal:
-     * Port 554 & 8554 (RTSP H.264/H.265 stream)
-     * Port 8080 & 8000 (HTTP / MJPEG video)
-     * Port 7000 (Mirroring socket)
-     * Port 1883 & 8883 (MQTT telemetry)
-     * Port 1900 & 5353 (SSDP / mDNS)
-5. **Cyberpunk HUD Dark Terminal**
-   * Desain modern true AMOLED black (`#080B10`) dengan aksen Neon Cyan & Emerald Green.
-   * Telemetry quick strip (BLE target, Host IP, Streaming port).
-   * Fitur salin log satu ketukan (*one-tap copy to clipboard*).
+### 1. Native Android Auto Receiver (`127.0.0.1:5277` & `5288`)
+* Terhubung langsung ke **Server Unit Kepala (Head Unit Server)** bawaan Android Auto di dalam ponsel yang sama (*loopback*).
+* Implementasi mandiri protokol **AAP v1.7 (Android Auto Protocol)** lengkap dengan:
+  * **In-Memory TLS 1.2/1.3 Handshake** ([`AaTlsEngine.kt`](app/src/main/java/com/umox/app/aa/AaTlsEngine.kt) & [`AaKeyManager.kt`](app/src/main/java/com/umox/app/aa/AaKeyManager.kt)) menggunakan sertifikat otentikasi Head Unit.
+  * **Zero-Dependency Protobuf Encoder/Decoder** ([`AaProto.kt`](app/src/main/java/com/umox/app/aa/AaProto.kt)) untuk negosiasi resolusi *widescreen*, sensor cahaya, fokus navigasi/audio, dan input tombol.
+  * **Sinkronisasi Tema Siang/Malam Otomatis**: Menerima sinyal sensor cahaya dari speedometer motor (`Channel 7, Msg 37`) dan otomatis mengubah tema Google Maps Android Auto antara *Day* dan *Night*.
+  * **Quick Remote Control**: Tombol pintas di aplikasi untuk berpindah cepat ke **🗺️ Google Maps**, **🎵 Musik**, **⏯ Play/Pause**, dan **🌓 Tema**.
+
+### 2. Zero-Copy Hardware GPU Surface Bridge (`960×360` @ 30 FPS CBR)
+* Aliran video H.264 dari Android Auto (`800×480` VFR) didekode oleh **Hardware AVC Decoder** langsung ke **`InputSurface` GPU milik Hardware AVC Encoder (`960×360`)** ([`MediaEncoder.kt`](app/src/main/java/com/umox/app/stream/MediaEncoder.kt)):
+  * **0% CPU Pixel Copy**: Seluruh proses *decoding*, *scaling* ke rasio `960×360`, dan *re-encoding* berjalan murni di hardware GPU/VPU ponsel (bebas panas dan hemat baterai).
+  * **Anti-Freeze Frame Repeat (`KEY_REPEAT_PREVIOUS_FRAME_AFTER = 33_333 µs`)**: Menjamin aliran konstan **30 FPS** meskipun tampilan peta sedang diam, serta merespons permintaan *KeyFrame* (`Msg 11`) dari speedometer dalam **< 33 ms**.
+
+### 3. Desay SV H.264 Annex-B NALU Sanitizer ([`H264NaluSanitizer.kt`](app/src/main/java/com/umox/app/stream/H264NaluSanitizer.kt))
+Decoder hardware Linux Desay SV pada Port `9528` memiliki aturan parser yang ketat. `H264NaluSanitizer` memastikan:
+1. Seluruh *start code* dinormalisasi menjadi **4-byte Annex-B (`00 00 00 01`)**.
+2. NALU **`SPS (type 7)`** dan **`PPS (type 8)`** tidak pernah dikirim terpisah (*standalone*), melainkan disimpan (*cached*) dan **ditempelkan langsung di depan setiap `IDR KeyFrame (type 5)`** menjadi satu paket utuh:
+   `[00 00 00 01 SPS] + [00 00 00 01 PPS] + [00 00 00 01 IDR]`.
+3. NALU sampah seperti **`SEI (type 6)`**, **`AUD (type 9)`**, dan **`Filler (type 12)`** otomatis dibuang agar gambar bebas artefak dan tidak pernah mengalami *buffer drop*.
+
+### 4. Auto-Discovery BLE GATT & Wi-Fi Direct (P2P)
+* **BLE Sniffer & GATT Explorer (`Service 0xFFF0`)**:
+  * Memindai sinyal BLE motor secara otomatis, menyambung ke karakteristik `0xFFFD` (Write) dan `0xFFFE` (Notify), lalu mengirim kueri *Function ID 1569* (`extSearchWifiInfo`) untuk mengekstrak **SSID, Password WPA2, MAC P2P, dan IP Gateway (`192.168.2.1`)** secara langsung dari motor.
+  * Membaca telemetri *real-time* motor: **Persentase Baterai (%)**, **Estimasi Jarak Tempuh (km)**, **Kecepatan (km/h)**, dan **Odometer**.
+* **Wi-Fi Direct Client (`groupOwnerIntent = 0`)**:
+  * Menyambungkan ponsel sebagai *P2P Client* ke grup Wi-Fi Direct speedometer (`DIRECT-OMO-*` pada `192.168.2.1`) sambil mempertahankan koneksi internet seluler **4G/5G** di ponsel.
 
 ---
 
-## 🛠️ Kompilasi & Instalasi Cepat
+## 📊 Ringkasan Spesifikasi Protokol Speedometer OMOWAY
 
-### Via Terminal (ADB Wireless):
-```powershell
-# Build APK
-& "..\tools\gradle-8.7\bin\gradle.bat" assembleDebug
+| Parameter | Spesifikasi Teknis | Keterangan |
+| :--- | :--- | :--- |
+| **Vendor Cluster** | **Desay SV Automotive** | OS Linux Embedded |
+| **IP Gateway Cluster** | **`192.168.2.1`** | Speedometer bertindak sebagai Wi-Fi Direct Group Owner |
+| **Port Kontrol (TCP)** | **`9527`** | Binary Header 8-Byte LE (`[Channel][Length]`) + Handshake ECDH (`Msg 49`) & JSON Control (`Channel 7`) |
+| **Port Video (TCP)** | **`9528`** | Binary Header 8-Byte LE (`Channel 2`) + H.264 Annex-B Stream + Heartbeat `Channel 0` tiap 800 ms |
+| **Resolusi & Codec** | **`960 × 360` piksel** | H.264 Baseline Profile Level 3.1, **30 FPS**, **2.5 Mbps CBR**, Keyframe tiap 1 detik |
+| **BLE Service UUID** | **`0000fff0-0000-1000-8000-00805f9b34fb`** | Write: `0xFFFD` (Framing `AA 55`), Notify: `0xFFFE` (ACK `AA 56 00`) |
 
-# Hubungkan ADB Wireless & Install ke HP
-& "..\tools\platform-tools\adb.exe" connect 192.168.x.x:PORT
-& "..\tools\platform-tools\adb.exe" install -r app\build\outputs\apk\debug\app-debug.apk
+---
+
+## 📱 Cara Penggunaan (3 Langkah Mudah)
+
+1. **Aktifkan Server Unit Kepala Android Auto (`127.0.0.1:5277`)**
+   * Tekan tombol **`Buka AA`** pada Langkah 1 di aplikasi UMOX.
+   * Di halaman pengaturan Android Auto yang terbuka, ketuk menu **Titik Tiga (⋮)** di pojok kanan atas ➔ pilih **"Mulai server unit kepala"** (*Start head unit server*).
+   * Indikator Langkah 1 di UMOX akan otomatis berubah menjadi **Hijau (✔ Aktif)**.
+2. **Hubungkan ke Motor (`Auto-Link`)**
+   * Nyalakan motor OMOWAY (pastikan aplikasi resmi OMOWAY sudah ditutup / *Force Stop* agar tidak memonopoli port `9527`).
+   * Tekan tombol **`Auto-Link`** pada Langkah 2. UMOX akan memindai BLE motor, mengambil kredensial Wi-Fi Direct, dan menyambung ke `192.168.2.1`.
+3. **Mulai Streaming!**
+   * Tekan tombol utama **`🚀 MULAI ANDROID AUTO`** (atau pilih **📱 Mirror Layar HP** / **🎬 Test Video 960×360**).
+   * Navigasi Google Maps & kontrol musik Android Auto akan langsung tampil secara mulus di layar speedometer motor!
+
+---
+
+## 📁 Struktur Direktori Kode Sumber
+
+```text
+umox-app/app/src/main/java/com/umox/app/
+├── MainActivity.kt                  # Dashboard utama Glassmorphic & orkestrasi UI/telemetri
+├── aa/
+│   ├── AaHeadlessReceiver.kt        # Native AAP v1.7 Client + Hardware AVC Decoder -> GPU Surface
+│   ├── AaTlsEngine.kt               # In-memory SSLEngine TLS wrapper/unwrapper untuk enkripsi AAP
+│   ├── AaKeyManager.kt              # X509 Certificate & RSA Private Key loader (res/raw/cert & privkey)
+│   └── AaProto.kt                   # Lightweight Protobuf Wire Format reader & writer
+├── stream/
+│   ├── ScreenCastService.kt         # Foreground Service pengelola sesi Android Auto, Mirror, & Test Video
+│   ├── MediaEncoder.kt              # Hardware H.264 Baseline Encoder (960x360 @ 30fps CBR, Surface Input)
+│   ├── H264NaluSanitizer.kt         # Normalisasi Annex-B 4-byte, strip SEI/AUD, & gabung SPS+PPS+IDR
+│   ├── ControlChannelClient.kt      # Klien TCP Port 9527 (ECDH NIST P-256 Msg 49, Heartbeat, SHOW/HIDE)
+│   ├── SocketStreamer.kt            # Klien TCP Port 9528 (Zero-allocation framing, TCP_NODELAY, FPS meter)
+│   └── H264AssetPlayer.kt           # Pemutar file uji test_baseline.h264 untuk verifikasi jalur video
+├── ble/
+│   ├── BleSniffer.kt                # Pemindai BLE Low-Latency dengan deteksi Service 0xFFF0 & OUI Desay SV
+│   ├── GattExplorer.kt              # Klien GATT (Auto-query kredensial Wi-Fi 1569 & parser telemetri)
+│   └── MotorcycleTelemetry.kt       # Model data telemetri baterai, jarak tempuh, kecepatan, & odometer
+├── wifi/
+│   └── WifiP2pProbe.kt              # Manajer koneksi Wi-Fi Direct (P2P Client groupOwnerIntent = 0)
+└── config/
+    └── AppConfig.kt                 # Konfigurasi default IP (192.168.2.1), Port (9527/9528), & payload BLE
 ```
 
 ---
 
-## 📁 Struktur Proyek
-* `app/src/main/java/com/umox/app/config/` : Konfigurasi terpusat (MAC address, IP, Port, dan parameter keamanan umum)
-* `app/src/main/java/com/umox/app/ble/` : Modul pemindai sinyal BLE & GATT
-* `app/src/main/java/com/umox/app/wifi/` : Modul Wi-Fi Direct P2P probe
-* `app/src/main/java/com/umox/app/probe/` : Modul Port scanner & packet listener
-* `app/src/main/res/layout/` : Antarmuka HUD modern
+## 🛠️ Kompilasi & Instalasi via Terminal (ADB)
 
----
+```powershell
+# 1. Kompilasi APK Debug dengan Gradle
+C:\Users\armadeas\UMOX\tools\gradle-8.7\bin\gradle.bat assembleDebug -p c:\Users\armadeas\UMOX\umox-app
 
-## ⚙️ Konfigurasi Perangkat (AppConfig)
+# 2. Instal ke HP via ADB (USB atau Wireless Debugging)
+C:\Users\armadeas\UMOX\tools\platform-tools\adb.exe install -r c:\Users\armadeas\UMOX\umox-app\app\build\outputs\apk\debug\app-debug.apk
 
-Seluruh parameter identitas perangkat, MAC address, alamat IP, dan port bersifat umum dan dapat disesuaikan pada file [`AppConfig.kt`](app/src/main/java/com/umox/app/config/AppConfig.kt):
-
-* `targetP2pMac`: MAC address Wi-Fi Direct P2P (opsional, biarkan kosong untuk mode auto-discovery).
-* `targetBleMac`: MAC address BLE cluster (opsional, biarkan kosong untuk auto-detect via Service UUID 0xFFF0).
-* `defaultClusterIp`: IP gateway cluster speedometer (default: `192.168.2.1`).
-* `defaultControlPort`: Port TCP saluran kontrol Desay SV (default: `9527`).
-* `defaultVideoPort`: Port TCP streaming video H.264 (default: `9528`).
+# 3. Jalankan Aplikasi UMOX Auto 2.0
+C:\Users\armadeas\UMOX\tools\platform-tools\adb.exe shell am start -n com.umox.app/.MainActivity
+```
