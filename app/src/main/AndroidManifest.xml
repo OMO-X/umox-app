@@ -28,10 +28,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <queries>
+        <package android:name="com.google.android.apps.maps" />
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@android:drawable/ic_menu_compass"
-        android:label="UMOX Sniffer"
+        android:label="UMOX HUD"
         android:roundIcon="@android:drawable/ic_menu_compass"
         android:supportsRtl="true"
         android:theme="@style/Theme.UMOX">
@@ -50,6 +54,17 @@
             android:name=".stream.ScreenCastService"
             android:foregroundServiceType="connectedDevice|mediaProjection"
             android:exported="false" />
+
+        <!-- Notification Listener Service untuk membaca Maps Turn-by-turn, Spotify & WhatsApp -->
+        <service
+            android:name=".service.UmoxNotificationListener"
+            android:label="UMOX HUD Notification Listener"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
 
     </application>
 

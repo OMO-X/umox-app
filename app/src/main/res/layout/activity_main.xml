@@ -662,62 +662,149 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Config: 960x360 @ 30 FPS | Dual Socket: 9527 (Ctrl) + 9528 (Video)"
+                android:text="Desay SV Native 960x360 @ 30 FPS | Dual Socket: 9527 (Ctrl) + 9528 (Video)"
                 android:textColor="@color/text_muted"
                 android:textSize="10.5sp"
                 android:fontFamily="monospace"
                 android:layout_marginBottom="10dp" />
 
-            <!-- 1-Click Pure Android Auto to Speedometer Hero Button -->
+            <!-- Live HUD Cockpit 960x360 Preview -->
+            <com.umox.app.ui.HudPreviewView
+                android:id="@+id/hudPreview"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#080c16"
+                android:layout_marginBottom="12dp" />
+
+            <!-- Action 1: Hero Button - NATIVE ANDROID AUTO OMOWAY -->
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnStartStream"
+                android:id="@+id/btnStartAndroidAuto"
                 android:layout_width="match_parent"
                 android:layout_height="56dp"
-                android:text="🚀 1-KLIK ANDROID AUTO KE SPEEDOMETER"
+                android:text="🚀 MULAI ANDROID AUTO OMOWAY (60 FPS)"
                 android:textAllCaps="false"
                 android:textColor="@color/bg_dark"
                 android:textSize="14sp"
                 android:textStyle="bold"
-                app:backgroundTint="@color/neon_green"
-                app:cornerRadius="12dp"
-                android:layout_marginBottom="10dp" />
+                app:backgroundTint="@color/neon_cyan"
+                app:cornerRadius="10dp"
+                android:layout_marginBottom="8dp" />
 
-            <!-- Secondary Actions -->
+            <!-- Row: Open AA Settings & Custom HUD Mode -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal">
+                android:orientation="horizontal"
+                android:layout_marginBottom="8dp">
 
                 <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnTestPattern"
+                    android:id="@+id/btnOpenAaSettings"
                     android:layout_width="0dp"
-                    android:layout_height="46dp"
-                    android:layout_weight="1"
-                    android:text="🎮 Standalone HUD"
+                    android:layout_height="44dp"
+                    android:layout_weight="1.1"
+                    android:text="⚙ Setup Android Auto"
                     android:textAllCaps="false"
-                    android:textColor="@color/neon_cyan"
+                    android:textColor="@color/text_primary"
+                    android:textSize="11.5sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="@color/surface_card_elevated"
+                    app:strokeColor="@color/neon_cyan"
+                    app:strokeWidth="1dp"
+                    app:cornerRadius="8dp"
+                    android:layout_marginEnd="4dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnStartHud"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_weight="1"
+                    android:text="📟 Mode Custom HUD"
+                    android:textAllCaps="false"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="11.5sp"
+                    app:backgroundTint="@color/surface_card_elevated"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cornerRadius="8dp"
+                    android:layout_marginStart="4dp" />
+            </LinearLayout>
+
+            <!-- Action 2 & 3: Cast Layar HP & Test Baseline -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginBottom="8dp">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnStartStream"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_weight="1"
+                    android:text="📱 Cast Layar HP"
+                    android:textAllCaps="false"
+                    android:textColor="@color/text_primary"
                     android:textSize="12sp"
                     android:textStyle="bold"
                     app:backgroundTint="@color/surface_card_elevated"
                     app:strokeColor="@color/card_stroke"
                     app:strokeWidth="1dp"
                     app:cornerRadius="8dp"
-                    android:layout_marginEnd="6dp" />
+                    android:layout_marginEnd="4dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnTestPattern"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_weight="1"
+                    android:text="🧪 Test Baseline OK"
+                    android:textAllCaps="false"
+                    android:textColor="@color/neon_green"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="@color/surface_card_elevated"
+                    app:strokeColor="@color/card_stroke"
+                    app:strokeWidth="1dp"
+                    app:cornerRadius="8dp"
+                    android:layout_marginStart="4dp" />
+            </LinearLayout>
+
+            <!-- Navigation & Stop Actions -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnOpenGoogleMaps"
                     android:layout_width="0dp"
-                    android:layout_height="48dp"
-                    android:layout_weight="1"
-                    android:text="Google Maps"
+                    android:layout_height="44dp"
+                    android:layout_weight="1.2"
+                    android:text="🗺️ Buka Google Maps"
                     android:textAllCaps="false"
-                    android:textColor="@color/neon_cyan"
-                    android:textSize="12sp"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="11.5sp"
                     app:backgroundTint="@color/surface_card_elevated"
                     app:strokeColor="@color/card_stroke"
                     app:strokeWidth="1dp"
-                    app:cornerRadius="10dp"
-                    android:layout_marginStart="6dp" />
+                    app:cornerRadius="8dp"
+                    android:layout_marginEnd="4dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnStopAllStream"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_weight="1"
+                    android:text="⏹ Hentikan Stream"
+                    android:textAllCaps="false"
+                    android:textColor="@color/neon_red"
+                    android:textSize="11.5sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="@color/surface_card_elevated"
+                    app:strokeColor="@color/neon_red"
+                    app:strokeWidth="1dp"
+                    app:cornerRadius="8dp"
+                    android:layout_marginStart="4dp" />
             </LinearLayout>
         </LinearLayout>
 

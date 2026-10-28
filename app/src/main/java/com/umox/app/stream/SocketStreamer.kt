@@ -1,6 +1,10 @@
 package com.umox.app.stream
 
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.OutputStream
 import java.net.InetSocketAddress
@@ -21,6 +25,8 @@ class SocketStreamer(
 
     var onConnectionLost: (() -> Unit)? = null
 
+    private var readJob: kotlinx.coroutines.Job? = null
+
     suspend fun connect() = withContext(Dispatchers.IO) {
         disconnect()
         framesSent = 0L
@@ -35,6 +41,20 @@ class SocketStreamer(
             outputStream = socket.getOutputStream()
             isConnected = true
             onLog("✔ Terhubung ke Saluran Video Speedometer ($targetIp:$targetPort) via TCP!")
+
+            readJob = CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val input = socket.getInputStream()
+                    val buf = ByteArray(1024)
+                    while (isActive && isConnected) {
+                        val n = input.read(buf)
+                        if (n < 0) {
+                            onLog("Saluran video ditutup oleh speedometer (EOF).")
+                            break
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
         } catch (e: Exception) {
             isConnected = false
             onLog("Gagal terhubung ke soket video ($targetIp:$targetPort): ${e.message}")
@@ -61,8 +81,9 @@ class SocketStreamer(
 
             if (framesSent == 1L) {
                 onLog("► Frame video pertama (${packet.size} bytes) terkirim ke speedometer ($targetPort)!")
-            } else if (framesSent % 150L == 0L) {
-                onLog("Streaming video aktif: $framesSent frame terkirim ke speedometer ($targetPort).")
+            } else if (framesSent % 30L == 0L) {
+                val sec = framesSent / 30L
+                onLog("Streaming video aktif: $framesSent frame (~$sec detik) terkirim ke speedometer ($targetPort).")
             }
         } catch (e: Exception) {
             val errMsg = e.message ?: "Broken pipe"
@@ -74,6 +95,8 @@ class SocketStreamer(
 
     fun disconnect() {
         isConnected = false
+        readJob?.cancel()
+        readJob = null
         try {
             outputStream?.close()
             tcpSocket?.close()

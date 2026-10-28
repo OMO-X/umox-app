@@ -11,24 +11,59 @@ enum class NavManeuver {
     SLIGHT_LEFT,
     SLIGHT_RIGHT,
     U_TURN,
+    ROUNDABOUT,
     DESTINATION
 }
 
+enum class HudTheme {
+    COOLWALK_DASHBOARD, // Android Auto Coolwalk Style: Nav + Music + Notif (Bebas tabrakan OSD motor)
+    SATELLITE_TOURING,   // Satellite Map Touring Layout
+    CYBERPUNK_TACTICAL,  // Neon Cyberpunk HUD
+    MINIMAL_OLED         // Ultra Clean OLED Stealth
+}
+
 data class HudState(
-    var speedKmh: Int = 0,
-    var maxSpeed: Int = 120,
-    var gearMode: String = "D",
-    var batteryPercent: Int = 85,
-    var rangeKm: Int = 68,
+    var theme: HudTheme = HudTheme.COOLWALK_DASHBOARD,
     var isNightMode: Boolean = true,
-    var navInstruction: String = "Lurus 500m",
-    var navRoadName: String = "Jl. Jenderal Sudirman",
-    var navDistance: String = "500 m",
-    var navManeuver: NavManeuver = NavManeuver.STRAIGHT,
-    var navEta: String = "14:30",
-    var navRemainingKm: String = "4.2 km",
-    var wifiStatus: String = "Wi-Fi: 192.168.2.1",
-    var clusterMode: String = "NIGHT"
+    var clusterMode: String = "NIGHT",
+
+    // Navigation Data
+    var navManeuver: NavManeuver = NavManeuver.TURN_RIGHT,
+    var navDistance: String = "350 m",
+    var navRoadName: String = "Jl. Margonda Raya",
+    var navInstruction: String = "Kemudian Belok Kanan ke Jl. Juanda",
+    var navEta: String = "14:25",
+    var navRemainingKm: String = "4.8 km",
+    var routeProgress: Float = 0.65f, // 0.0 .. 1.0
+
+    // Music & Media Data (Spotify / YouTube Music)
+    var isMusicPlaying: Boolean = true,
+    var songTitle: String = "Blinding Lights",
+    var songArtist: String = "The Weeknd",
+    var musicSource: String = "SPOTIFY",
+
+    // Incoming Notifications (WhatsApp, Telepon, SMS)
+    var notificationActive: Boolean = false,
+    var notificationSender: String = "Budi Santoso",
+    var notificationApp: String = "WhatsApp",
+    var notificationText: String = "Posisi di mana bro? Gw udah sampai lokasi.",
+
+    // Weather & Status
+    var weatherText: String = "☀️ 29°C Cerah",
+    var wifiStatus: String = "DESAY SV 9528 OK",
+
+    // Telemetry Passthrough (dari BLE / GPS jika dibutuhkan)
+    var speedKmh: Int = 0,
+    var batteryPercent: Int = 92,
+    var rangeKm: Int = 78,
+    var gearMode: String = "D",
+
+    // GPS & Real Visual Map Properties (Technique 2: Headless 960x360 Map)
+    var latitude: Double = -6.2088,
+    var longitude: Double = 106.8456,
+    var bearing: Float = 45f,
+    var liveMapBitmap: Bitmap? = null,
+    var isSatelliteMapEnabled: Boolean = true
 )
 
 class HudDashboardRenderer(
@@ -37,290 +72,518 @@ class HudDashboardRenderer(
 ) {
     val state = HudState()
 
-    // Pre-allocated Paint objects for 60fps zero-allocation rendering
+    // Pre-allocated Paint objects untuk zero-allocation rendering @ 30/60 FPS
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { isSubpixelText = true }
 
     // Pre-allocated RectF objects
-    private val fullScreenRect = RectF(0f, 0f, width.toFloat(), height.toFloat())
-    private val leftCardRect = RectF(20f, 20f, 310f, 340f)
-    private val centerCardRect = RectF(330f, 15f, 630f, 345f)
-    private val rightCardRect = RectF(650f, 20f, 940f, 340f)
-    private val speedArcRect = RectF(380f, 40f, 580f, 240f)
-    private val batteryBarRect = RectF(680f, 175f, 910f, 195f)
+    private val navCardRect = RectF(35f, 45f, 570f, 325f)
+    private val musicCardRect = RectF(585f, 45f, 755f, 225f)
+    private val notifCardRect = RectF(160f, 20f, 720f, 95f)
 
-    private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
-    private val dateFormat = SimpleDateFormat("EEE, dd MMM", Locale.getDefault())
+    // Animated Equalizer state
+    private val eqBars = intArrayOf(10, 16, 22, 14, 20, 12, 18, 8)
+    private val random = Random()
 
     fun render(canvas: Canvas) {
-        val now = Date()
-        val timeStr = timeFormat.format(now)
-        val dateStr = dateFormat.format(now)
-
         val isNight = state.isNightMode
 
-        // 1. Background
-        if (isNight) {
-            canvas.drawColor(Color.rgb(8, 12, 22))
-        } else {
-            canvas.drawColor(Color.rgb(240, 244, 250))
+        // Update Equalizer bar animation
+        if (state.isMusicPlaying) {
+            for (i in eqBars.indices) {
+                eqBars[i] = random.nextInt(20) + 4
+            }
         }
 
-        // 2. Render Cards
-        renderNavCard(canvas, isNight)
-        renderSpeedometerCard(canvas, isNight)
-        renderTelemetryCard(canvas, isNight, timeStr, dateStr)
+        when (state.theme) {
+            HudTheme.COOLWALK_DASHBOARD -> renderCoolwalkDashboard(canvas, isNight)
+            HudTheme.SATELLITE_TOURING -> renderSatelliteTouring(canvas, isNight)
+            HudTheme.CYBERPUNK_TACTICAL -> renderCyberpunkTactical(canvas, isNight)
+            HudTheme.MINIMAL_OLED -> renderMinimalOled(canvas, isNight)
+        }
 
-        // 3. Top Status Bar / Accent Strip
-        renderStatusBar(canvas, isNight)
+        // Render Notifikasi WhatsApp jika sedang aktif
+        if (state.notificationActive) {
+            renderNotificationBanner(canvas, isNight)
+        }
     }
 
-    private fun renderNavCard(canvas: Canvas, isNight: Boolean) {
-        // Card Background
+    // =========================================================================
+    // TEMA 1: ANDROID AUTO COOLWALK DASHBOARD (SPLIT: NAV + MUSIC + NOTIF)
+    // Sempurna & aman dari tabrakan OSD speedometer motor (speed, gear, power bar)
+    // =========================================================================
+    private fun renderCoolwalkDashboard(canvas: Canvas, isNight: Boolean) {
+        // 1. Background Kanvas & Visual Map
+        if (state.liveMapBitmap != null) {
+            canvas.drawBitmap(state.liveMapBitmap!!, 0f, 0f, null)
+            canvas.drawColor(Color.argb(85, 8, 12, 22)) // Dark contrast tint
+            drawVehicleNavigationMarker(canvas, 300f, 210f, state.bearing)
+        } else {
+            canvas.drawColor(if (isNight) Color.rgb(7, 10, 18) else Color.rgb(241, 245, 249))
+
+            // Grid peta halus di background navigasi
+            strokePaint.color = if (isNight) Color.argb(40, 30, 41, 59) else Color.argb(60, 203, 213, 225)
+            strokePaint.strokeWidth = 1.5f
+            for (x in 40..560 step 50) {
+                canvas.drawLine(x.toFloat(), 15f, x.toFloat(), 340f, strokePaint)
+            }
+            for (y in 25..345 step 50) {
+                canvas.drawLine(35f, y.toFloat(), 570f, y.toFloat(), strokePaint)
+            }
+
+            // Jalur Rute Navigasi Virtual (Glow effect)
+            strokePaint.color = Color.argb(70, 59, 130, 246)
+            strokePaint.strokeWidth = 18f
+            strokePaint.strokeCap = Paint.Cap.ROUND
+            strokePaint.strokeJoin = Paint.Join.ROUND
+            val routePath = Path().apply {
+                moveTo(120f, 290f)
+                lineTo(220f, 230f)
+                lineTo(300f, 160f)
+                lineTo(450f, 110f)
+            }
+            canvas.drawPath(routePath, strokePaint)
+
+            strokePaint.color = Color.rgb(59, 130, 246)
+            strokePaint.strokeWidth = 8f
+            canvas.drawPath(routePath, strokePaint)
+        }
+
+        // 2. Main Navigation Card (x: 35..570, y: 45..325)
         fillPaint.color = if (isNight) Color.rgb(15, 23, 42) else Color.WHITE
-        canvas.drawRoundRect(leftCardRect, 18f, 18f, fillPaint)
+        canvas.drawRoundRect(navCardRect, 18f, 18f, fillPaint)
 
         strokePaint.color = if (isNight) Color.rgb(30, 41, 59) else Color.rgb(226, 232, 240)
-        strokePaint.strokeWidth = 2f
-        canvas.drawRoundRect(leftCardRect, 18f, 18f, strokePaint)
+        strokePaint.strokeWidth = 1.8f
+        canvas.drawRoundRect(navCardRect, 18f, 18f, strokePaint)
 
-        // Navigation Header Badge
-        fillPaint.color = Color.rgb(16, 185, 129) // Emerald Green
-        canvas.drawRoundRect(40f, 35f, 140f, 62f, 8f, 8f, fillPaint)
+        // Maneuver Arrow Badge (Emerald Green / Neon Cyan)
+        fillPaint.color = Color.rgb(16, 185, 129)
+        canvas.drawRoundRect(RectF(55f, 65f, 135f, 145f), 14f, 14f, fillPaint)
+        drawManeuverArrow(canvas, 95f, 105f, state.navManeuver, Color.WHITE)
 
-        textPaint.color = Color.WHITE
-        textPaint.textSize = 14f
-        textPaint.isFakeBoldText = true
-        canvas.drawText("NAVIGASI", 52f, 54f, textPaint)
-
-        // Maneuver Arrow
-        drawManeuverArrow(canvas, 90f, 130f, state.navManeuver, isNight)
-
-        // Distance to Turn
+        // Jarak Belokan Besar
         textPaint.color = if (isNight) Color.WHITE else Color.rgb(15, 23, 42)
         textPaint.textSize = 38f
         textPaint.isFakeBoldText = true
-        canvas.drawText(state.navDistance, 145f, 125f, textPaint)
+        canvas.drawText(state.navDistance, 155f, 102f, textPaint)
 
-        textPaint.textSize = 15f
-        textPaint.color = if (isNight) Color.rgb(148, 163, 184) else Color.rgb(100, 116, 139)
-        textPaint.isFakeBoldText = false
-        canvas.drawText(state.navInstruction, 145f, 148f, textPaint)
-
-        // Road Name
-        textPaint.color = if (isNight) Color.rgb(0, 229, 255) else Color.rgb(2, 132, 199)
-        textPaint.textSize = 20f
+        // Nama Jalan Tujuan
+        textPaint.color = Color.rgb(0, 229, 255)
+        textPaint.textSize = 22f
         textPaint.isFakeBoldText = true
         val truncatedRoad = if (state.navRoadName.length > 22) state.navRoadName.take(20) + "..." else state.navRoadName
-        canvas.drawText(truncatedRoad, 40f, 215f, textPaint)
+        canvas.drawText(truncatedRoad, 155f, 136f, textPaint)
 
-        // Divider
-        strokePaint.color = if (isNight) Color.rgb(30, 41, 59) else Color.rgb(226, 232, 240)
-        canvas.drawLine(40f, 235f, 290f, 235f, strokePaint)
+        // Instruksi Lanjutan
+        textPaint.color = if (isNight) Color.rgb(148, 163, 184) else Color.rgb(100, 116, 139)
+        textPaint.textSize = 15f
+        textPaint.isFakeBoldText = false
+        canvas.drawText(state.navInstruction, 55f, 185f, textPaint)
+
+        // Route Progress Bar
+        val progBarTotal = 495f
+        fillPaint.color = if (isNight) Color.rgb(30, 41, 59) else Color.rgb(226, 232, 240)
+        canvas.drawRoundRect(RectF(55f, 210f, 55f + progBarTotal, 218f), 4f, 4f, fillPaint)
+
+        fillPaint.color = Color.rgb(16, 185, 129)
+        val activeProg = progBarTotal * state.routeProgress.coerceIn(0f, 1f)
+        canvas.drawRoundRect(RectF(55f, 210f, 55f + activeProg, 218f), 4f, 4f, fillPaint)
 
         // Trip ETA & Remaining Distance
         textPaint.color = if (isNight) Color.WHITE else Color.rgb(15, 23, 42)
-        textPaint.textSize = 18f
+        textPaint.textSize = 21f
         textPaint.isFakeBoldText = true
-        canvas.drawText("ETA ${state.navEta}", 40f, 275f, textPaint)
+        canvas.drawText("ETA ${state.navEta}", 55f, 258f, textPaint)
 
         textPaint.color = if (isNight) Color.rgb(148, 163, 184) else Color.rgb(100, 116, 139)
         textPaint.textSize = 16f
         textPaint.isFakeBoldText = false
-        canvas.drawText("Sisa: ${state.navRemainingKm}", 40f, 305f, textPaint)
-    }
+        canvas.drawText("Sisa ${state.navRemainingKm} • Estimasi Lancar", 55f, 288f, textPaint)
 
-    private fun renderSpeedometerCard(canvas: Canvas, isNight: Boolean) {
-        // Outer speed background arc (135° to 405° = 270° sweep)
-        strokePaint.strokeWidth = 14f
-        strokePaint.color = if (isNight) Color.rgb(30, 41, 59) else Color.rgb(226, 232, 240)
-        strokePaint.strokeCap = Paint.Cap.ROUND
-        canvas.drawArc(speedArcRect, 135f, 270f, false, strokePaint)
-
-        // Active speed arc (Neon Cyan / Green)
-        val speedClamped = state.speedKmh.coerceIn(0, state.maxSpeed)
-        val sweepAngle = (speedClamped.toFloat() / state.maxSpeed.toFloat()) * 270f
-        if (sweepAngle > 0) {
-            strokePaint.color = when {
-                speedClamped > 80 -> Color.rgb(239, 68, 68) // Red warning
-                speedClamped > 50 -> Color.rgb(245, 158, 11) // Amber
-                else -> Color.rgb(0, 229, 255) // Cyan
-            }
-            canvas.drawArc(speedArcRect, 135f, sweepAngle, false, strokePaint)
-        }
-
-        // Giant Digital Speed
-        val cx = centerCardRect.centerX()
-        val cy = centerCardRect.centerY() - 10f
-
-        textPaint.color = if (isNight) Color.WHITE else Color.rgb(15, 23, 42)
-        textPaint.textSize = 82f
-        textPaint.isFakeBoldText = true
-        val speedStr = "${state.speedKmh}"
-        val speedWidth = textPaint.measureText(speedStr)
-        canvas.drawText(speedStr, cx - speedWidth / 2f, cy + 28f, textPaint)
-
-        // KM/H Unit
-        textPaint.color = if (isNight) Color.rgb(0, 229, 255) else Color.rgb(2, 132, 199)
-        textPaint.textSize = 16f
-        textPaint.isFakeBoldText = true
-        val kmhStr = "KM/H"
-        canvas.drawText(kmhStr, cx - textPaint.measureText(kmhStr) / 2f, cy + 58f, textPaint)
-
-        // Gear Modes [ P ] [ R ] [ N ] [ D ] [ S ]
-        val gears = listOf("P", "ECO", "D", "S")
-        val gearStartY = cy + 110f
-        val startX = cx - 110f
-        val stepX = 55f
-
-        for (i in gears.indices) {
-            val g = gears[i]
-            val gx = startX + (i * stepX)
-            val isCurrent = g == state.gearMode
-
-            if (isCurrent) {
-                fillPaint.color = Color.rgb(0, 229, 255)
-                canvas.drawRoundRect(gx - 18f, gearStartY - 18f, gx + 18f, gearStartY + 14f, 6f, 6f, fillPaint)
-                textPaint.color = Color.BLACK
-            } else {
-                textPaint.color = if (isNight) Color.rgb(100, 116, 139) else Color.rgb(148, 163, 184)
-            }
-            textPaint.textSize = 16f
-            textPaint.isFakeBoldText = true
-            val tw = textPaint.measureText(g)
-            canvas.drawText(g, gx - tw / 2f, gearStartY + 3f, textPaint)
-        }
-    }
-
-    private fun renderTelemetryCard(canvas: Canvas, isNight: Boolean, timeStr: String, dateStr: String) {
-        // Card Background
+        // 3. Right Music Card (x: 585..755, y: 45..225) -> Aman dari Speedometer OSD di x>780
         fillPaint.color = if (isNight) Color.rgb(15, 23, 42) else Color.WHITE
-        canvas.drawRoundRect(rightCardRect, 18f, 18f, fillPaint)
+        canvas.drawRoundRect(musicCardRect, 16f, 16f, fillPaint)
 
         strokePaint.color = if (isNight) Color.rgb(30, 41, 59) else Color.rgb(226, 232, 240)
-        strokePaint.strokeWidth = 2f
-        canvas.drawRoundRect(rightCardRect, 18f, 18f, strokePaint)
+        strokePaint.strokeWidth = 1.8f
+        canvas.drawRoundRect(musicCardRect, 16f, 16f, strokePaint)
 
-        // Digital Clock
-        textPaint.color = if (isNight) Color.WHITE else Color.rgb(15, 23, 42)
-        textPaint.textSize = 38f
+        // Music Provider Badge
+        textPaint.color = Color.rgb(29, 185, 84) // Spotify Green
+        textPaint.textSize = 12f
         textPaint.isFakeBoldText = true
-        canvas.drawText(timeStr, 680f, 75f, textPaint)
+        canvas.drawText("● ${state.musicSource}", 605f, 72f, textPaint)
 
-        textPaint.color = if (isNight) Color.rgb(148, 163, 184) else Color.rgb(100, 116, 139)
+        // Song Title
+        textPaint.color = if (isNight) Color.WHITE else Color.rgb(15, 23, 42)
         textPaint.textSize = 15f
-        textPaint.isFakeBoldText = false
-        canvas.drawText(dateStr, 680f, 102f, textPaint)
-
-        // Divider
-        strokePaint.color = if (isNight) Color.rgb(30, 41, 59) else Color.rgb(226, 232, 240)
-        canvas.drawLine(680f, 120f, 910f, 120f, strokePaint)
-
-        // Battery Header
-        textPaint.color = if (isNight) Color.WHITE else Color.rgb(15, 23, 42)
-        textPaint.textSize = 18f
         textPaint.isFakeBoldText = true
-        canvas.drawText("BATERAI", 680f, 155f, textPaint)
+        val truncatedSong = if (state.songTitle.length > 13) state.songTitle.take(11) + "..." else state.songTitle
+        canvas.drawText(truncatedSong, 605f, 105f, textPaint)
 
-        val batColor = when {
-            state.batteryPercent > 40 -> Color.rgb(16, 185, 129) // Green
-            state.batteryPercent > 20 -> Color.rgb(245, 158, 11) // Amber
-            else -> Color.rgb(239, 68, 68) // Red
-        }
-        textPaint.color = batColor
-        val batStr = "${state.batteryPercent}%"
-        val batWidth = textPaint.measureText(batStr)
-        canvas.drawText(batStr, 910f - batWidth, 155f, textPaint)
-
-        // Battery Bar Outline & Fill
-        fillPaint.color = if (isNight) Color.rgb(30, 41, 59) else Color.rgb(226, 232, 240)
-        canvas.drawRoundRect(batteryBarRect, 6f, 6f, fillPaint)
-
-        val fillWidth = batteryBarRect.width() * (state.batteryPercent.coerceIn(0, 100) / 100f)
-        if (fillWidth > 0) {
-            fillPaint.color = batColor
-            canvas.drawRoundRect(
-                batteryBarRect.left, batteryBarRect.top,
-                batteryBarRect.left + fillWidth, batteryBarRect.bottom,
-                6f, 6f, fillPaint
-            )
-        }
-
-        // Remaining Range
-        textPaint.color = if (isNight) Color.WHITE else Color.rgb(15, 23, 42)
-        textPaint.textSize = 18f
-        textPaint.isFakeBoldText = true
-        canvas.drawText("Jarak: ${state.rangeKm} km", 680f, 240f, textPaint)
-
-        // Speedometer Link Status
-        textPaint.color = Color.rgb(16, 185, 129)
-        textPaint.textSize = 14f
-        textPaint.isFakeBoldText = true
-        canvas.drawText("● DESAY SV 9528 OK", 680f, 280f, textPaint)
-
+        // Artist Name
         textPaint.color = if (isNight) Color.rgb(148, 163, 184) else Color.rgb(100, 116, 139)
         textPaint.textSize = 13f
         textPaint.isFakeBoldText = false
-        canvas.drawText(state.wifiStatus, 680f, 305f, textPaint)
+        val truncatedArtist = if (state.songArtist.length > 14) state.songArtist.take(12) + "..." else state.songArtist
+        canvas.drawText(truncatedArtist, 605f, 128f, textPaint)
+
+        // Animated Equalizer Frequency Bars
+        val eqStartX = 605f
+        val eqBaseY = 180f
+        fillPaint.color = Color.rgb(0, 229, 255)
+        for (i in eqBars.indices) {
+            val barH = if (state.isMusicPlaying) eqBars[i].toFloat() else 4f
+            canvas.drawRect(eqStartX + (i * 9), eqBaseY - barH, eqStartX + (i * 9) + 5, eqBaseY, fillPaint)
+        }
+
+        // Media Controls Indicator
+        textPaint.color = if (isNight) Color.rgb(203, 213, 225) else Color.rgb(71, 85, 105)
+        textPaint.textSize = 13f
+        textPaint.isFakeBoldText = true
+        canvas.drawText(if (state.isMusicPlaying) "⏸" else "▶", 695f, 175f, textPaint)
+
+        // 4. Status & Weather Strip (Top Center: x: 230..470, y: 10..36)
+        val statusRect = RectF(230f, 10f, 470f, 36f)
+        fillPaint.color = if (isNight) Color.argb(220, 15, 23, 42) else Color.argb(230, 255, 255, 255)
+        canvas.drawRoundRect(statusRect, 13f, 13f, fillPaint)
+
+        strokePaint.color = if (isNight) Color.rgb(30, 41, 59) else Color.rgb(203, 213, 225)
+        strokePaint.strokeWidth = 1f
+        canvas.drawRoundRect(statusRect, 13f, 13f, strokePaint)
+
+        textPaint.color = if (isNight) Color.rgb(56, 189, 248) else Color.rgb(2, 132, 199)
+        textPaint.textSize = 11.5f
+        textPaint.isFakeBoldText = true
+        canvas.drawText("${state.weatherText} • ${state.wifiStatus}", 242f, 27f, textPaint)
+
+        // Proteksi OSD cluster motor (0 km/h di kanan bawah & 0.0 kW di bawah)
+        renderOsdSafetyVignette(canvas)
     }
 
-    private fun renderStatusBar(canvas: Canvas, isNight: Boolean) {
-        // Top glowing accent line
-        fillPaint.color = Color.rgb(0, 229, 255)
-        canvas.drawRect(0f, 0f, width.toFloat(), 3f, fillPaint)
+    // =========================================================================
+    // TEMA 2: SATELLITE TOURING (FULL SATELLITE BACKGROUND DENGAN GLASS CARD)
+    // =========================================================================
+    private fun renderSatelliteTouring(canvas: Canvas, isNight: Boolean) {
+        if (state.liveMapBitmap != null) {
+            canvas.drawBitmap(state.liveMapBitmap!!, 0f, 0f, null)
+            canvas.drawColor(Color.argb(35, 5, 8, 15)) // Subtle contrast tint
+            drawVehicleNavigationMarker(canvas, 300f, 210f, state.bearing)
+        } else {
+            // Dark Earth / Satellite terrain base
+            canvas.drawColor(Color.rgb(28, 36, 25))
 
-        // Brand Title
-        textPaint.color = if (isNight) Color.rgb(100, 116, 139) else Color.rgb(148, 163, 184)
+            // Road network simulation
+            strokePaint.color = Color.rgb(71, 85, 105)
+            strokePaint.strokeWidth = 14f
+            strokePaint.strokeCap = Paint.Cap.ROUND
+            val roadNetwork = Path().apply {
+                moveTo(80f, 360f)
+                lineTo(260f, 210f)
+                lineTo(440f, 180f)
+                lineTo(680f, 80f)
+            }
+            canvas.drawPath(roadNetwork, strokePaint)
+
+            // Active Route Highlight
+            strokePaint.color = Color.rgb(56, 189, 248)
+            strokePaint.strokeWidth = 10f
+            val activePath = Path().apply {
+                moveTo(80f, 360f)
+                lineTo(260f, 210f)
+                lineTo(440f, 180f)
+            }
+            canvas.drawPath(activePath, strokePaint)
+        }
+
+        // Floating Frosted Glass Card Navigasi (x: 40..530, y: 50..180)
+        fillPaint.color = Color.argb(235, 15, 23, 42)
+        canvas.drawRoundRect(RectF(40f, 50f, 530f, 180f), 18f, 18f, fillPaint)
+        strokePaint.color = Color.argb(100, 56, 189, 248)
+        strokePaint.strokeWidth = 1.5f
+        canvas.drawRoundRect(RectF(40f, 50f, 530f, 180f), 18f, 18f, strokePaint)
+
+        // Maneuver badge
+        fillPaint.color = Color.rgb(2, 132, 199)
+        canvas.drawRoundRect(RectF(55f, 65f, 115f, 125f), 12f, 12f, fillPaint)
+        drawManeuverArrow(canvas, 85f, 95f, state.navManeuver, Color.WHITE)
+
+        textPaint.color = Color.WHITE
+        textPaint.textSize = 34f
+        textPaint.isFakeBoldText = true
+        canvas.drawText(state.navDistance, 135f, 98f, textPaint)
+
+        textPaint.color = Color.rgb(56, 189, 248)
+        textPaint.textSize = 20f
+        canvas.drawText(state.navRoadName, 135f, 132f, textPaint)
+
+        textPaint.color = Color.rgb(148, 163, 184)
+        textPaint.textSize = 14f
+        textPaint.isFakeBoldText = false
+        canvas.drawText(state.navInstruction, 55f, 162f, textPaint)
+
+        // Bottom Trip Status Card (x: 40..380, y: 220..310)
+        fillPaint.color = Color.argb(235, 15, 23, 42)
+        canvas.drawRoundRect(RectF(40f, 215f, 380f, 310f), 16f, 16f, fillPaint)
+        strokePaint.color = Color.argb(120, 30, 41, 59)
+        canvas.drawRoundRect(RectF(40f, 215f, 380f, 310f), 16f, 16f, strokePaint)
+
+        textPaint.color = Color.WHITE
+        textPaint.textSize = 24f
+        textPaint.isFakeBoldText = true
+        canvas.drawText("ETA ${state.navEta}", 60f, 255f, textPaint)
+
+        textPaint.color = Color.rgb(148, 163, 184)
+        textPaint.textSize = 15f
+        textPaint.isFakeBoldText = false
+        canvas.drawText("Sisa: ${state.navRemainingKm} • Rute Satelit", 60f, 288f, textPaint)
+
+        // Proteksi OSD cluster motor
+        renderOsdSafetyVignette(canvas)
+    }
+
+    // =========================================================================
+    // TEMA 3: CYBERPUNK TACTICAL COCKPIT
+    // =========================================================================
+    private fun renderCyberpunkTactical(canvas: Canvas, isNight: Boolean) {
+        canvas.drawColor(Color.rgb(5, 7, 13))
+
+        // Futuristic Grid lines
+        strokePaint.color = Color.argb(35, 0, 229, 255)
+        strokePaint.strokeWidth = 1f
+        canvas.drawLine(30f, 180f, 760f, 180f, strokePaint)
+        canvas.drawLine(350f, 20f, 350f, 330f, strokePaint)
+
+        // Tactical Left Nav Box
+        fillPaint.color = Color.rgb(9, 14, 26)
+        val leftBox = RectF(40f, 45f, 335f, 310f)
+        canvas.drawRoundRect(leftBox, 12f, 12f, fillPaint)
+        strokePaint.color = Color.rgb(0, 229, 255)
+        strokePaint.strokeWidth = 1.5f
+        canvas.drawRoundRect(leftBox, 12f, 12f, strokePaint)
+
+        textPaint.color = Color.rgb(0, 229, 255)
         textPaint.textSize = 12f
         textPaint.isFakeBoldText = true
-        canvas.drawText("UMOX ANDROID AUTO HUD", width / 2f - 75f, 15f, textPaint)
+        canvas.drawText("[TACTICAL NAVIGATION]", 55f, 75f, textPaint)
+
+        drawManeuverArrow(canvas, 90f, 125f, state.navManeuver, Color.rgb(0, 229, 255))
+        textPaint.color = Color.WHITE
+        textPaint.textSize = 34f
+        canvas.drawText(state.navDistance, 140f, 130f, textPaint)
+
+        textPaint.color = Color.rgb(245, 158, 11)
+        textPaint.textSize = 18f
+        canvas.drawText(state.navRoadName, 55f, 195f, textPaint)
+
+        textPaint.color = Color.rgb(148, 163, 184)
+        textPaint.textSize = 14f
+        textPaint.isFakeBoldText = false
+        canvas.drawText("ETA: ${state.navEta} | ${state.navRemainingKm}", 55f, 240f, textPaint)
+
+        // Telemetry & Music Center Panel
+        val rightBox = RectF(365f, 45f, 745f, 310f)
+        fillPaint.color = Color.rgb(9, 14, 26)
+        canvas.drawRoundRect(rightBox, 12f, 12f, fillPaint)
+        strokePaint.color = Color.rgb(30, 41, 59)
+        canvas.drawRoundRect(rightBox, 12f, 12f, strokePaint)
+
+        textPaint.color = Color.rgb(16, 185, 129)
+        textPaint.textSize = 12f
+        textPaint.isFakeBoldText = true
+        canvas.drawText("[MEDIA & TELEMETRY]", 385f, 75f, textPaint)
+
+        textPaint.color = Color.WHITE
+        textPaint.textSize = 18f
+        canvas.drawText("NOW PLAYING: ${state.songTitle}", 385f, 115f, textPaint)
+
+        textPaint.color = Color.rgb(0, 229, 255)
+        textPaint.textSize = 14f
+        textPaint.isFakeBoldText = false
+        canvas.drawText("ARTIST: ${state.songArtist}", 385f, 140f, textPaint)
+
+        // Audio Frequency Visualizer
+        fillPaint.color = Color.rgb(0, 229, 255)
+        for (i in eqBars.indices) {
+            val barH = eqBars[i] * 2.5f
+            canvas.drawRect(385f + (i * 18), 240f - barH, 385f + (i * 18) + 10, 240f, fillPaint)
+        }
     }
 
-    private fun drawManeuverArrow(canvas: Canvas, cx: Float, cy: Float, maneuver: NavManeuver, isNight: Boolean) {
+    // =========================================================================
+    // TEMA 4: MINIMAL OLED STEALTH
+    // =========================================================================
+    private fun renderMinimalOled(canvas: Canvas, isNight: Boolean) {
+        canvas.drawColor(Color.BLACK)
+
+        drawManeuverArrow(canvas, 100f, 140f, state.navManeuver, Color.rgb(0, 229, 255))
+        textPaint.color = Color.WHITE
+        textPaint.textSize = 50f
+        textPaint.isFakeBoldText = true
+        canvas.drawText(state.navDistance, 170f, 155f, textPaint)
+
+        textPaint.color = Color.rgb(148, 163, 184)
+        textPaint.textSize = 22f
+        canvas.drawText(state.navRoadName, 100f, 215f, textPaint)
+
+        textPaint.color = Color.rgb(16, 185, 129)
+        textPaint.textSize = 18f
+        canvas.drawText("ETA ${state.navEta} • Sisa ${state.navRemainingKm}", 100f, 255f, textPaint)
+    }
+
+    // =========================================================================
+    // NOTIFIKASI WHATSAPP / CALL POPUP BANNER (TOP CENTER)
+    // =========================================================================
+    private fun renderNotificationBanner(canvas: Canvas, isNight: Boolean) {
+        // Banner card at top center
+        fillPaint.color = Color.rgb(15, 23, 42)
+        canvas.drawRoundRect(notifCardRect, 16f, 16f, fillPaint)
+
+        strokePaint.color = Color.rgb(37, 211, 102) // WhatsApp Green
+        strokePaint.strokeWidth = 2f
+        canvas.drawRoundRect(notifCardRect, 16f, 16f, strokePaint)
+
+        // WhatsApp Icon Badge
+        fillPaint.color = Color.rgb(37, 211, 102)
+        canvas.drawCircle(195f, 57f, 18f, fillPaint)
+        textPaint.color = Color.WHITE
+        textPaint.textSize = 18f
+        textPaint.isFakeBoldText = true
+        canvas.drawText("💬", 185f, 63f, textPaint)
+
+        // Sender Name
+        textPaint.color = Color.WHITE
+        textPaint.textSize = 16f
+        textPaint.isFakeBoldText = true
+        canvas.drawText("${state.notificationSender} (${state.notificationApp})", 230f, 48f, textPaint)
+
+        // Notification Text Snippet
+        textPaint.color = Color.rgb(148, 163, 184)
+        textPaint.textSize = 13.5f
+        textPaint.isFakeBoldText = false
+        val truncatedNotif = if (state.notificationText.length > 55) state.notificationText.take(52) + "..." else state.notificationText
+        canvas.drawText(truncatedNotif, 230f, 73f, textPaint)
+    }
+
+    private fun drawManeuverArrow(canvas: Canvas, cx: Float, cy: Float, maneuver: NavManeuver, color: Int) {
         val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(16, 185, 129)
+            this.color = color
             style = Paint.Style.STROKE
-            strokeWidth = 8f
+            strokeWidth = 7f
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
         }
 
         val path = Path()
         when (maneuver) {
-            NavManeuver.STRAIGHT -> {
-                path.moveTo(cx, cy + 25f)
-                path.lineTo(cx, cy - 25f)
-                path.moveTo(cx - 15f, cy - 10f)
-                path.lineTo(cx, cy - 25f)
-                path.lineTo(cx + 15f, cy - 10f)
-            }
-            NavManeuver.TURN_LEFT -> {
-                path.moveTo(cx + 15f, cy + 25f)
-                path.lineTo(cx + 15f, cy)
-                path.arcTo(RectF(cx - 15f, cy - 15f, cx + 15f, cy + 15f), 0f, -90f, false)
-                path.lineTo(cx - 20f, cy - 15f)
-                path.moveTo(cx - 10f, cy - 30f)
-                path.lineTo(cx - 25f, cy - 15f)
-                path.lineTo(cx - 10f, cy)
-            }
             NavManeuver.TURN_RIGHT -> {
-                path.moveTo(cx - 15f, cy + 25f)
+                path.moveTo(cx - 15f, cy + 20f)
                 path.lineTo(cx - 15f, cy)
                 path.arcTo(RectF(cx - 15f, cy - 15f, cx + 15f, cy + 15f), 180f, 90f, false)
-                path.lineTo(cx + 20f, cy - 15f)
-                path.moveTo(cx + 10f, cy - 30f)
-                path.lineTo(cx + 25f, cy - 15f)
-                path.lineTo(cx + 10f, cy)
+                path.lineTo(cx + 15f, cy - 15f)
+                path.moveTo(cx + 5f, cy - 25f)
+                path.lineTo(cx + 18f, cy - 15f)
+                path.lineTo(cx + 5f, cy - 5f)
             }
-            else -> {
-                path.moveTo(cx, cy + 25f)
-                path.lineTo(cx, cy - 25f)
-                path.moveTo(cx - 15f, cy - 10f)
-                path.lineTo(cx, cy - 25f)
-                path.lineTo(cx + 15f, cy - 10f)
+            NavManeuver.TURN_LEFT -> {
+                path.moveTo(cx + 15f, cy + 20f)
+                path.lineTo(cx + 15f, cy)
+                path.arcTo(RectF(cx - 15f, cy - 15f, cx + 15f, cy + 15f), 0f, -90f, false)
+                path.lineTo(cx - 15f, cy - 15f)
+                path.moveTo(cx - 5f, cy - 25f)
+                path.lineTo(cx - 18f, cy - 15f)
+                path.lineTo(cx - 5f, cy - 5f)
+            }
+            NavManeuver.U_TURN -> {
+                path.moveTo(cx + 15f, cy + 20f)
+                path.lineTo(cx + 15f, cy - 5f)
+                path.arcTo(RectF(cx - 15f, cy - 20f, cx + 15f, cy + 10f), 0f, -180f, false)
+                path.lineTo(cx - 15f, cy + 15f)
+                path.moveTo(cx - 25f, cy + 5f)
+                path.lineTo(cx - 15f, cy + 18f)
+                path.lineTo(cx - 5f, cy + 5f)
+            }
+            NavManeuver.ROUNDABOUT -> {
+                path.addCircle(cx, cy, 14f, Path.Direction.CW)
+                path.moveTo(cx + 14f, cy)
+                path.lineTo(cx + 22f, cy - 8f)
+            }
+            else -> { // STRAIGHT
+                path.moveTo(cx, cy + 22f)
+                path.lineTo(cx, cy - 22f)
+                path.moveTo(cx - 14f, cy - 8f)
+                path.lineTo(cx, cy - 22f)
+                path.lineTo(cx + 14f, cy - 8f)
             }
         }
         canvas.drawPath(path, arrowPaint)
+    }
+
+    private fun drawVehicleNavigationMarker(canvas: Canvas, cx: Float, cy: Float, bearing: Float) {
+        canvas.save()
+        canvas.rotate(bearing, cx, cy)
+
+        // Outer glow
+        val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(90, 0, 229, 255)
+            style = Paint.Style.FILL
+        }
+        canvas.drawCircle(cx, cy, 22f, glowPaint)
+
+        // Vehicle Chevron / Arrow
+        val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(0, 229, 255)
+            style = Paint.Style.FILL
+        }
+        val path = Path().apply {
+            moveTo(cx, cy - 18f) // Tip
+            lineTo(cx + 12f, cy + 14f) // Right bottom
+            lineTo(cx, cy + 6f) // Indent
+            lineTo(cx - 12f, cy + 14f) // Left bottom
+            close()
+        }
+        canvas.drawPath(path, arrowPaint)
+
+        // White core highlight
+        val corePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.FILL
+        }
+        val corePath = Path().apply {
+            moveTo(cx, cy - 14f)
+            lineTo(cx + 6f, cy + 10f)
+            lineTo(cx, cy + 5f)
+            lineTo(cx - 6f, cy + 10f)
+            close()
+        }
+        canvas.drawPath(corePath, corePaint)
+
+        canvas.restore()
+    }
+
+    private fun renderOsdSafetyVignette(canvas: Canvas) {
+        // 1. Right Bottom Speedometer Zone (x: 740..960, y: 190..360) untuk speed 0 km/h
+        val speedMask = Paint().apply {
+            shader = RadialGradient(
+                870f, 300f, 140f,
+                Color.argb(250, 5, 8, 15),
+                Color.argb(0, 5, 8, 15),
+                Shader.TileMode.CLAMP
+            )
+        }
+        canvas.drawRect(720f, 170f, 960f, 360f, speedMask)
+
+        // 2. Bottom Power Bar Zone (y: 325..360) untuk daya 0.0 kW
+        val powerMask = Paint().apply {
+            shader = LinearGradient(
+                480f, 315f, 480f, 360f,
+                Color.argb(0, 5, 8, 15),
+                Color.argb(250, 5, 8, 15),
+                Shader.TileMode.CLAMP
+            )
+        }
+        canvas.drawRect(0f, 315f, 960f, 360f, powerMask)
     }
 }

@@ -122,9 +122,19 @@ class GattExplorer(
             descriptor: BluetoothGattDescriptor,
             status: Int
         ) {
-            onLog("✔ CCCD Berhasil Diaktifkan (Status: $status)! Memulai Polling Telemetri Otomatis...")
-            startPeriodicPolling()
+            onLog("✔ CCCD Berhasil Diaktifkan (Status: $status)! Mengambil info Wi-Fi motor...")
+            // 1. Minta kredensial Wi-Fi Direct motor secara otomatis
+            mainHandler.postDelayed({
+                sendWifiQueryRequest()
+            }, 300)
+
+            // 2. Mulai polling status telemetri berkala setelah 2 detik
+            mainHandler.postDelayed({
+                startPeriodicPolling()
+            }, 2000)
         }
+
+        private val multiFrameBuffer = java.io.ByteArrayOutputStream()
 
         @SuppressLint("MissingPermission")
         override fun onCharacteristicChanged(
@@ -139,10 +149,31 @@ class GattExplorer(
             // Kirim link-layer ACK (AA5600) balik ke motor jika ini 0xFFFE
             sendAck()
 
-            // Periksa jika ada teks JSON Wi-Fi (dari extSearchWifiInfo)
-            val ascii = String(bytes, Charsets.UTF_8)
-            if (ascii.contains("ap_config") || ascii.contains("DIRECT-OMO")) {
-                parseWifiJson(ascii)
+            // Handle link framing AA55
+            if (bytes.size >= 4 && bytes[0] == 0xAA.toByte() && bytes[1] == 0x55.toByte()) {
+                val frameCtrl = bytes[2].toInt() and 0xFF
+                val isMultiFrame = (frameCtrl and 0x40) != 0
+                val seq = frameCtrl and 0x3F
+
+                if (isMultiFrame) {
+                    if (seq == 0) {
+                        multiFrameBuffer.reset()
+                    }
+                    multiFrameBuffer.write(bytes, 4, bytes.size - 4)
+                } else {
+                    multiFrameBuffer.reset()
+                    multiFrameBuffer.write(bytes, 4, bytes.size - 4)
+                }
+            } else {
+                multiFrameBuffer.write(bytes)
+            }
+
+            // Periksa jika ada teks JSON Wi-Fi (dari extSearchWifiInfo) baik di frame langsung atau multi-frame
+            val directAscii = String(bytes, Charsets.UTF_8)
+            val bufferedAscii = multiFrameBuffer.toString("UTF-8")
+            if (bufferedAscii.contains("ap_config") || directAscii.contains("ap_config")) {
+                val candidateStr = if (bufferedAscii.contains("ap_config")) bufferedAscii else directAscii
+                parseWifiJson(candidateStr)
             }
 
             // Parse telemetri motor
@@ -185,6 +216,20 @@ class GattExplorer(
     }
 
     @SuppressLint("MissingPermission")
+    fun sendWifiQueryRequest() {
+        val wc = writeChar
+        val gatt = currentGatt
+        if (wc != null && gatt != null) {
+            val wifiQueryFrame = AppConfig.wifiQueryPayload
+            onLog("📤 Mengirim Kueri Wi-Fi Direct (extSearchWifiInfo - 1569) ke Motor via 0xFFFD...")
+            wc.value = wifiQueryFrame
+            gatt.writeCharacteristic(wc)
+        } else {
+            onLog("Saluran kontrol BLE 0xFFFD belum siap untuk kueri Wi-Fi.")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
     fun sendPollRequest() {
         val wc = writeChar
         val gatt = currentGatt
@@ -212,12 +257,20 @@ class GattExplorer(
                     val pass = ap.optString("password")
                     val ip = ap.optString("ip_address", "192.168.2.1")
 
+                    var p2pMac = ""
+                    if (json.has("p2p_config")) {
+                        p2pMac = json.getJSONObject("p2p_config").optString("device_address")
+                    }
+
                     currentTelemetry.wifiSsid = ssid
                     currentTelemetry.wifiPassword = pass
                     currentTelemetry.wifiIp = ip
 
                     onLog("★ KREDENSIAL WI-FI MOTOR DIDAPAT DARI BLE:")
-                    onLog("   SSID: $ssid | Password: $pass | IP: $ip")
+                    onLog("   SSID: $ssid | Password: $pass | IP: $ip ${if (p2pMac.isNotBlank()) "| P2P MAC: $p2pMac" else ""}")
+                    if (p2pMac.isNotBlank()) {
+                        AppConfig.saveP2pMac(context, p2pMac)
+                    }
                     onWifiInfoFound(ssid, pass, ip)
                 }
             }

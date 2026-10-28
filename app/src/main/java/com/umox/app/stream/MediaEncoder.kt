@@ -51,6 +51,9 @@ class MediaEncoder(
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // 1 detik I-frame
             setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
+            setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
+            setInteger("vendor.qti-ext-enc-entropy-mode.value", 0) // CAVLC (Baseline)
             setInteger("latency", 0)
             setInteger("priority", 0)
             setInteger("prepend-sps-pps-to-idr-frames", 1) // Injeksi otomatis SPS/PPS di setiap I-frame
@@ -97,10 +100,7 @@ class MediaEncoder(
                                 if (isConfig) {
                                     spsPpsBytes = outData
                                 } else {
-                                    val hasSps = outData.size >= 5 &&
-                                            outData[0] == 0.toByte() && outData[1] == 0.toByte() &&
-                                            outData[2] == 0.toByte() && outData[3] == 1.toByte() &&
-                                            (outData[4].toInt() and 0x1F) == 7
+                                    val hasSps = hasSpsInPacket(outData)
 
                                     if (isKeyFrame && !hasSps && spsPpsBytes != null) {
                                         val combined = ByteArray(spsPpsBytes.size + outData.size)
@@ -272,5 +272,27 @@ class MediaEncoder(
         } catch (_: Exception) {}
         inputSurface = null
         onLog("Encoder video dihentikan.")
+    }
+
+    private fun hasSpsInPacket(data: ByteArray): Boolean {
+        var i = 0
+        while (i < data.size - 4) {
+            if (data[i] == 0.toByte() && data[i + 1] == 0.toByte()) {
+                if (data[i + 2] == 1.toByte()) {
+                    val ntype = data[i + 3].toInt() and 0x1F
+                    if (ntype == 7) return true
+                    i += 3
+                } else if (data[i + 2] == 0.toByte() && data[i + 3] == 1.toByte()) {
+                    val ntype = data[i + 4].toInt() and 0x1F
+                    if (ntype == 7) return true
+                    i += 4
+                } else {
+                    i++
+                }
+            } else {
+                i++
+            }
+        }
+        return false
     }
 }
