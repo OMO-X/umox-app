@@ -7,6 +7,28 @@ import java.nio.charset.StandardCharsets
  * Compact ProtoBuf encoder and decoder for Android Auto Protocol (AAP).
  * Lightweight, zero-dependency replacement for heavy Google protobuf runtimes.
  */
+object AaProto {
+    inline fun encode(block: AaProtoWriter.() -> Unit): ByteArray {
+        val writer = AaProtoWriter()
+        writer.block()
+        return writer.toByteArray()
+    }
+
+    fun parseFields(data: ByteArray, offset: Int = 0, length: Int = data.size - offset): Map<Int, List<Any>> {
+        val reader = AaProtoReader(data, offset, length)
+        val result = mutableMapOf<Int, MutableList<Any>>()
+        for (f in reader.fields) {
+            val list = result.getOrPut(f.tag) { mutableListOf() }
+            if (f.wireType == 2 && f.bytes != null) {
+                list.add(f.bytes)
+            } else {
+                list.add(f.varintValue)
+            }
+        }
+        return result
+    }
+}
+
 class AaProtoWriter {
     private val buffer = ByteArrayOutputStream()
 
@@ -20,6 +42,10 @@ class AaProtoWriter {
         return writeVarint(fieldNumber, value.toLong())
     }
 
+    fun writeBool(fieldNumber: Int, value: Boolean): AaProtoWriter {
+        return writeVarint(fieldNumber, if (value) 1L else 0L)
+    }
+
     fun writeBytes(fieldNumber: Int, bytes: ByteArray): AaProtoWriter {
         writeTag(fieldNumber, 2)
         writeRawVarint(bytes.size.toLong())
@@ -29,6 +55,12 @@ class AaProtoWriter {
 
     fun writeString(fieldNumber: Int, str: String): AaProtoWriter {
         return writeBytes(fieldNumber, str.toByteArray(StandardCharsets.UTF_8))
+    }
+
+    fun writeMessage(fieldNumber: Int, block: AaProtoWriter.() -> Unit): AaProtoWriter {
+        val nested = AaProtoWriter()
+        nested.block()
+        return writeBytes(fieldNumber, nested.toByteArray())
     }
 
     private fun writeTag(fieldNumber: Int, wireType: Int) {
@@ -71,12 +103,12 @@ class AaProtoReader(data: ByteArray, offset: Int = 0, length: Int = data.size - 
             val wireType = (tagAndType and 0x07).toInt()
 
             when (wireType) {
-                0 -> { // Varint
+                0 -> {
                     val (v, afterV) = readVarint(data, pos, end)
                     pos = afterV
                     fields.add(AaProtoField(tag, wireType, v, null))
                 }
-                1 -> { // Fixed64
+                1 -> {
                     if (pos + 8 > end) break
                     var v = 0L
                     for (b in 0 until 8) {
@@ -85,7 +117,7 @@ class AaProtoReader(data: ByteArray, offset: Int = 0, length: Int = data.size - 
                     pos += 8
                     fields.add(AaProtoField(tag, wireType, v, null))
                 }
-                2 -> { // Length-delimited
+                2 -> {
                     val (len, afterLen) = readVarint(data, pos, end)
                     pos = afterLen
                     val intLen = len.toInt()
@@ -95,7 +127,7 @@ class AaProtoReader(data: ByteArray, offset: Int = 0, length: Int = data.size - 
                     pos += intLen
                     fields.add(AaProtoField(tag, wireType, intLen.toLong(), bArr))
                 }
-                5 -> { // Fixed32
+                5 -> {
                     if (pos + 4 > end) break
                     var v = 0L
                     for (b in 0 until 4) {
@@ -104,33 +136,9 @@ class AaProtoReader(data: ByteArray, offset: Int = 0, length: Int = data.size - 
                     pos += 4
                     fields.add(AaProtoField(tag, wireType, v, null))
                 }
-                else -> {
-                    // Unknown wire type, cannot proceed safely
-                    break
-                }
+                else -> break
             }
         }
-    }
-
-    fun getLong(tag: Int, default: Long = 0L): Long {
-        return fields.firstOrNull { it.tag == tag && it.wireType == 0 }?.varintValue ?: default
-    }
-
-    fun getInt(tag: Int, default: Int = 0): Int {
-        return getLong(tag, default.toLong()).toInt()
-    }
-
-    fun getBytes(tag: Int): ByteArray? {
-        return fields.firstOrNull { it.tag == tag && it.wireType == 2 }?.bytes
-    }
-
-    fun getString(tag: Int): String? {
-        val b = getBytes(tag) ?: return null
-        return String(b, StandardCharsets.UTF_8)
-    }
-
-    fun getAll(tag: Int): List<AaProtoField> {
-        return fields.filter { it.tag == tag }
     }
 
     companion object {

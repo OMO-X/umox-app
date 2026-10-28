@@ -29,13 +29,14 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <queries>
+        <package android:name="com.google.android.projection.gearhead" />
         <package android:name="com.google.android.apps.maps" />
     </queries>
 
     <application
         android:allowBackup="true"
         android:icon="@android:drawable/ic_menu_compass"
-        android:label="UMOX HUD"
+        android:label="UMOX Auto"
         android:roundIcon="@android:drawable/ic_menu_compass"
         android:supportsRtl="true"
         android:theme="@style/Theme.UMOX">
@@ -43,6 +44,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.UMOX">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -54,17 +56,6 @@
             android:name=".stream.ScreenCastService"
             android:foregroundServiceType="connectedDevice|mediaProjection"
             android:exported="false" />
-
-        <!-- Notification Listener Service untuk membaca Maps Turn-by-turn, Spotify & WhatsApp -->
-        <service
-            android:name=".service.UmoxNotificationListener"
-            android:label="UMOX HUD Notification Listener"
-            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.service.notification.NotificationListenerService" />
-            </intent-filter>
-        </service>
 
     </application>
 

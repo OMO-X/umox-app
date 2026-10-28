@@ -1,26 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/bg_dark"
-    android:fillViewport="true">
+    android:background="@drawable/bg_screen_radial"
+    android:fillViewport="true"
+    android:scrollbars="none">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="16dp">
+        android:paddingHorizontal="18dp"
+        android:paddingTop="20dp"
+        android:paddingBottom="32dp">
 
-        <!-- ================= TOP HEADER HUD ================= -->
+        <!-- ==================== 1. HEADER & LIVE TELEMETRY PILLS ==================== -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginBottom="16dp">
+            android:orientation="horizontal"
+            android:layout_marginBottom="18dp">
 
-            <!-- Logo & Title -->
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
@@ -30,175 +32,88 @@
                 <LinearLayout
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:gravity="center_vertical">
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="UMOX"
-                        android:textColor="@color/neon_cyan"
-                        android:textSize="24sp"
-                        android:textStyle="bold"
-                        android:letterSpacing="0.08" />
+                        android:textColor="#FFFFFF"
+                        android:textSize="26sp"
+                        android:fontFamily="sans-serif-black"
+                        android:letterSpacing="0.06" />
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text=" HUD"
-                        android:textColor="@color/text_title"
-                        android:textSize="24sp"
-                        android:textStyle="bold"
-                        android:letterSpacing="0.08" />
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/bg_status_pill"
+                        android:paddingHorizontal="9dp"
+                        android:paddingVertical="2dp"
+                        android:text="AUTO 2.0"
+                        android:textColor="#00E5FF"
+                        android:textSize="10sp"
+                        android:textStyle="bold" />
                 </LinearLayout>
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Unofficial Omoway OMO X App &amp; Stream Bridge"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="11sp"
-                    android:letterSpacing="0.02" />
+                    android:layout_marginTop="2dp"
+                    android:text="OMOWAY 960×360 • HARDWARE GPU BRIDGE"
+                    android:textColor="#8B949E"
+                    android:textSize="10.5sp"
+                    android:letterSpacing="0.05"
+                    android:textStyle="bold" />
             </LinearLayout>
 
-            <!-- Status Pill Badge -->
-            <TextView
-                android:id="@+id/tvStatusBadge"
+            <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="● IDLE"
-                android:textColor="@color/neon_green"
-                android:textSize="11sp"
-                android:textStyle="bold"
-                android:paddingHorizontal="12dp"
-                android:paddingVertical="6dp"
-                android:background="@drawable/badge_bg" />
-        </LinearLayout>
-
-        <!-- ================= TELEMETRY QUICK STRIP ================= -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginBottom="16dp">
-
-            <!-- Metric 1: BLE Target -->
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical"
-                android:background="@drawable/bg_card_modern"
-                android:padding="10dp"
-                android:layout_marginEnd="6dp">
+                android:gravity="end"
+                android:orientation="vertical">
 
                 <TextView
+                    android:id="@+id/tvConnectionBadge"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="BLE TARGET"
-                    android:textColor="@color/text_muted"
-                    android:textSize="9sp"
-                    android:textStyle="bold"
-                    android:letterSpacing="0.05" />
+                    android:background="@drawable/bg_status_pill"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="5dp"
+                    android:text="● SIAGA"
+                    android:textColor="#00E5FF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
 
                 <TextView
-                    android:id="@+id/tvMetricBle"
+                    android:id="@+id/tvStreamStatsBadge"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Searching..."
-                    android:textColor="@color/text_primary"
-                    android:textSize="12sp"
-                    android:textStyle="bold"
-                    android:maxLines="1"
-                    android:ellipsize="end"
-                    android:layout_marginTop="2dp" />
-            </LinearLayout>
-
-            <!-- Metric 2: IP Host -->
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical"
-                android:background="@drawable/bg_card_modern"
-                android:padding="10dp"
-                android:layout_marginStart="3dp"
-                android:layout_marginEnd="3dp">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="HOST IP"
-                    android:textColor="@color/text_muted"
-                    android:textSize="9sp"
-                    android:textStyle="bold"
-                    android:letterSpacing="0.05" />
-
-                <TextView
-                    android:id="@+id/tvMetricIp"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="192.168.2.1"
-                    android:textColor="@color/neon_cyan"
-                    android:textSize="12sp"
+                    android:layout_marginTop="4dp"
                     android:fontFamily="monospace"
-                    android:textStyle="bold"
-                    android:layout_marginTop="2dp" />
-            </LinearLayout>
-
-            <!-- Metric 3: Port Stream -->
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical"
-                android:background="@drawable/bg_card_modern"
-                android:padding="10dp"
-                android:layout_marginStart="6dp">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="PORTS"
-                    android:textColor="@color/text_muted"
-                    android:textSize="9sp"
-                    android:textStyle="bold"
-                    android:letterSpacing="0.05" />
-
-                <TextView
-                    android:id="@+id/tvMetricPort"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="9528 / 9527"
-                    android:textColor="@color/neon_amber"
-                    android:textSize="12sp"
-                    android:fontFamily="monospace"
-                    android:textStyle="bold"
-                    android:layout_marginTop="2dp" />
+                    android:text="960×360 • IDLE"
+                    android:textColor="#6E7681"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
             </LinearLayout>
         </LinearLayout>
 
-        <!-- ================= LIVE MOTORCYCLE TELEMETRY (BLE) ================= -->
+        <!-- ==================== 2. HERO CARD: ANDROID AUTO BRIDGE ==================== -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:background="@drawable/bg_glass_card"
             android:orientation="vertical"
-            android:background="@drawable/bg_card_modern"
-            android:padding="14dp"
-            android:layout_marginBottom="12dp">
+            android:padding="18dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:layout_marginBottom="12dp">
-
-                <ImageView
-                    android:layout_width="22dp"
-                    android:layout_height="22dp"
-                    android:src="@drawable/ic_radar"
-                    android:layout_marginEnd="10dp" />
+                android:orientation="horizontal"
+                android:layout_marginBottom="14dp">
 
                 <LinearLayout
                     android:layout_width="0dp"
@@ -209,360 +124,677 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="TELEMETRI MOTOR REAL-TIME (BLE)"
-                        android:textColor="@color/text_title"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
+                        android:text="ANDROID AUTO WIRELESS"
+                        android:textColor="#FFFFFF"
+                        android:textSize="15sp"
+                        android:fontFamily="sans-serif-black"
+                        android:letterSpacing="0.04" />
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Baterai, Range, Odometer, dan Status Motor Langsung via GATT"
-                        android:textColor="@color/text_secondary"
+                        android:layout_marginTop="2dp"
+                        android:text="Langsung dari HP tanpa aplikasi tambahan (Zero-Copy GPU)"
+                        android:textColor="#8B949E"
+                        android:textSize="11.5sp" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tvAaBadge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_glass_inner"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="4dp"
+                    android:text="H.264 CBR"
+                    android:textColor="#00E676"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!-- STEP 1: Server Unit Kepala Android Auto -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:background="@drawable/bg_glass_inner"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="10dp">
+
+                <View
+                    android:id="@+id/dotStepAa"
+                    android:layout_width="10dp"
+                    android:layout_height="10dp"
+                    android:background="@drawable/bg_dot_indicator" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="1. Server Unit Kepala Android Auto"
+                        android:textColor="#E6EDF3"
+                        android:textSize="12.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvStepAaStatus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="1dp"
+                        android:text="Mengecek port lokal 127.0.0.1:5277..."
+                        android:textColor="#8B949E"
+                        android:textSize="11sp" />
+                </LinearLayout>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnOpenAaSettings"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingHorizontal="12dp"
+                    android:text="Buka AA"
+                    android:textColor="#00E5FF"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#162232"
+                    app:cornerRadius="10dp"
+                    app:strokeColor="#2A3E57"
+                    app:strokeWidth="1dp" />
+            </LinearLayout>
+
+            <!-- STEP 2: Koneksi BLE & Wi-Fi Direct Motor -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:background="@drawable/bg_glass_inner"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="10dp">
+
+                <View
+                    android:id="@+id/dotStepMotor"
+                    android:layout_width="10dp"
+                    android:layout_height="10dp"
+                    android:background="@drawable/bg_dot_indicator" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="2. Jaringan Motor (BLE + Wi-Fi 192.168.2.1)"
+                        android:textColor="#E6EDF3"
+                        android:textSize="12.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvStepMotorStatus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="1dp"
+                        android:text="Siap memindai BLE &amp; menghubungkan P2P"
+                        android:textColor="#8B949E"
+                        android:textSize="11sp" />
+                </LinearLayout>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnAutoLinkMotor"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingHorizontal="12dp"
+                    android:text="Auto-Link"
+                    android:textColor="#00E676"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#122822"
+                    app:cornerRadius="10dp"
+                    app:strokeColor="#1F4B3E"
+                    app:strokeWidth="1dp" />
+            </LinearLayout>
+
+            <!-- STEP 3: Saluran Stream Desay SV -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="14dp"
+                android:background="@drawable/bg_glass_inner"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="10dp">
+
+                <View
+                    android:id="@+id/dotStepStream"
+                    android:layout_width="10dp"
+                    android:layout_height="10dp"
+                    android:background="@drawable/bg_dot_indicator" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="3. Transmisi Speedometer (Port 9527 &amp; 9528)"
+                        android:textColor="#E6EDF3"
+                        android:textSize="12.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvStepStreamStatus"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="1dp"
+                        android:text="Siaga • Menunggu instruksi mulai"
+                        android:textColor="#8B949E"
                         android:textSize="11sp" />
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- Grid 2x3 for Metrics -->
+            <!-- PRIMARY CTA: MULAI ANDROID AUTO / HENTIKAN -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnStartAndroidAuto"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="🚀  MULAI ANDROID AUTO"
+                android:textColor="#041016"
+                android:textSize="14.5sp"
+                android:fontFamily="sans-serif-black"
+                android:letterSpacing="0.04"
+                app:backgroundTint="#00E5FF"
+                app:cornerRadius="14dp" />
+
+            <!-- TOMBOL STOP STREAMING (Muncul saat streaming aktif) -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnStopCast"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="⏹  HENTIKAN STREAMING"
+                android:textColor="#FF5252"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:visibility="gone"
+                app:backgroundTint="#291217"
+                app:cornerRadius="12dp"
+                app:strokeColor="#5C2028"
+                app:strokeWidth="1dp" />
+
+            <!-- QUICK REMOTE BAR UNTUK KONTROL ANDROID AUTO -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnRemoteMaps"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="38dp"
+                    android:layout_marginEnd="5dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingHorizontal="4dp"
+                    android:text="🗺️ Maps"
+                    android:textColor="#E6EDF3"
+                    android:textSize="11sp"
+                    app:backgroundTint="#141E2B"
+                    app:cornerRadius="10dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnRemoteMusic"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="38dp"
+                    android:layout_marginEnd="5dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingHorizontal="4dp"
+                    android:text="🎵 Musik"
+                    android:textColor="#E6EDF3"
+                    android:textSize="11sp"
+                    app:backgroundTint="#141E2B"
+                    app:cornerRadius="10dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnRemotePlayPause"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="38dp"
+                    android:layout_marginEnd="5dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingHorizontal="4dp"
+                    android:text="⏯ Play"
+                    android:textColor="#E6EDF3"
+                    android:textSize="11sp"
+                    app:backgroundTint="#141E2B"
+                    app:cornerRadius="10dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnRemoteNightMode"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="38dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingHorizontal="4dp"
+                    android:text="🌓 Tema"
+                    android:textColor="#00E5FF"
+                    android:textSize="11sp"
+                    app:backgroundTint="#141E2B"
+                    app:cornerRadius="10dp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- ==================== 3. MODE ALTERNATIF & KONFIGURASI JARINGAN ==================== -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:background="@drawable/bg_glass_card"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="10dp"
+                android:text="MODE PROYEKSI ALTERNATIF"
+                android:textColor="#8B949E"
+                android:textSize="11sp"
+                android:letterSpacing="0.06"
+                android:textStyle="bold" />
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
-                android:layout_marginBottom="8dp">
+                android:layout_marginBottom="12dp">
 
-                <!-- Metric: Baterai SoC -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnStartCast"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="46dp"
+                    android:layout_marginEnd="6dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="📱 Mirror Layar HP"
+                    android:textColor="#00E5FF"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#122230"
+                    app:cornerRadius="12dp"
+                    app:strokeColor="#214059"
+                    app:strokeWidth="1dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnStartPattern"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="46dp"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="🎬 Test Video 960×360"
+                    android:textColor="#E6EDF3"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#161F2C"
+                    app:cornerRadius="12dp"
+                    app:strokeColor="#26354A"
+                    app:strokeWidth="1dp" />
+            </LinearLayout>
+
+            <!-- Baris Kontrol Jaringan & P2P Manual -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_glass_inner"
+                android:orientation="vertical"
+                android:padding="12dp">
+
                 <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="8dp">
+
+                    <TextView
+                        android:id="@+id/tvExtractedSsid"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:fontFamily="monospace"
+                        android:text="SSID: OMOWAY-*"
+                        android:textColor="#E6EDF3"
+                        android:textSize="11.5sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvExtractedPass"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="PASS: 12345678"
+                        android:textColor="#00E676"
+                        android:textSize="11.5sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="8dp">
+
+                    <EditText
+                        android:id="@+id/etClusterIp"
+                        android:layout_width="0dp"
+                        android:layout_height="38dp"
+                        android:layout_marginEnd="6dp"
+                        android:layout_weight="1.5"
+                        android:background="@drawable/bg_glass_card"
+                        android:fontFamily="monospace"
+                        android:hint="IP Cluster"
+                        android:inputType="text"
+                        android:paddingHorizontal="10dp"
+                        android:text="192.168.2.1"
+                        android:textColor="#FFFFFF"
+                        android:textColorHint="#6E7681"
+                        android:textSize="12sp" />
+
+                    <EditText
+                        android:id="@+id/etControlPort"
+                        android:layout_width="0dp"
+                        android:layout_height="38dp"
+                        android:layout_marginEnd="6dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_glass_card"
+                        android:fontFamily="monospace"
+                        android:hint="Ctrl"
+                        android:inputType="number"
+                        android:paddingHorizontal="8dp"
+                        android:text="9527"
+                        android:textColor="#FFFFFF"
+                        android:textSize="12sp" />
+
+                    <EditText
+                        android:id="@+id/etVideoPort"
+                        android:layout_width="0dp"
+                        android:layout_height="38dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_glass_card"
+                        android:fontFamily="monospace"
+                        android:hint="Video"
+                        android:inputType="number"
+                        android:paddingHorizontal="8dp"
+                        android:text="9528"
+                        android:textColor="#FFFFFF"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnScanBle"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:paddingHorizontal="4dp"
+                        android:text="Scan BLE"
+                        android:textColor="#E6EDF3"
+                        android:textSize="10.5sp"
+                        app:backgroundTint="#172230"
+                        app:cornerRadius="8dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnConnectWifi"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:paddingHorizontal="4dp"
+                        android:text="Tautkan P2P"
+                        android:textColor="#00E5FF"
+                        android:textSize="10.5sp"
+                        app:backgroundTint="#172230"
+                        app:cornerRadius="8dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnForceP2pConnect"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_marginEnd="4dp"
+                        android:layout_weight="1"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:paddingHorizontal="4dp"
+                        android:text="Direct P2P"
+                        android:textColor="#FFB300"
+                        android:textSize="10.5sp"
+                        app:backgroundTint="#172230"
+                        app:cornerRadius="8dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnUnbindNet"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_weight="1"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:paddingHorizontal="4dp"
+                        android:text="Reset Net"
+                        android:textColor="#8B949E"
+                        android:textSize="10.5sp"
+                        app:backgroundTint="#172230"
+                        app:cornerRadius="8dp" />
+                </LinearLayout>
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- ==================== 4. TELEMETRI & KONTROL MOTOR (BLE GATT) ==================== -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:background="@drawable/bg_glass_card"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:layout_marginBottom="10dp">
+
+                <TextView
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
+                    android:text="TELEMETRI MOTOR (BLE GATT)"
+                    android:textColor="#8B949E"
+                    android:textSize="11sp"
+                    android:letterSpacing="0.06"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvTeleLockState"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="STATUS: --"
+                    android:textColor="#00E676"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginBottom="10dp">
+
+                <!-- Baterai -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="6dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_glass_inner"
+                    android:gravity="center"
                     android:orientation="vertical"
-                    android:background="#161b26"
-                    android:padding="8dp"
-                    android:layout_marginEnd="4dp">
+                    android:paddingVertical="10dp">
+
+                    <TextView
+                        android:id="@+id/tvTeleBat"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="sans-serif-black"
+                        android:text="--%"
+                        android:textColor="#00E676"
+                        android:textSize="18sp" />
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="BATERAI"
-                        android:textColor="@color/text_muted"
-                        android:textSize="9sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/tvLiveBattery"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="-- %"
-                        android:textColor="@color/neon_green"
-                        android:textSize="16sp"
-                        android:textStyle="bold"
-                        android:layout_marginTop="2dp" />
+                        android:textColor="#8B949E"
+                        android:textSize="9.5sp" />
                 </LinearLayout>
 
-                <!-- Metric: Sisa Jarak -->
+                <!-- Jarak Tempuh -->
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
+                    android:layout_marginEnd="6dp"
                     android:layout_weight="1"
+                    android:background="@drawable/bg_glass_inner"
+                    android:gravity="center"
                     android:orientation="vertical"
-                    android:background="#161b26"
-                    android:padding="8dp"
-                    android:layout_marginStart="4dp"
-                    android:layout_marginEnd="4dp">
+                    android:paddingVertical="10dp">
+
+                    <TextView
+                        android:id="@+id/tvTeleRange"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="sans-serif-black"
+                        android:text="-- km"
+                        android:textColor="#00E5FF"
+                        android:textSize="18sp" />
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="EST. JARAK"
-                        android:textColor="@color/text_muted"
-                        android:textSize="9sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/tvLiveRange"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="-- km"
-                        android:textColor="@color/neon_cyan"
-                        android:textSize="16sp"
-                        android:textStyle="bold"
-                        android:layout_marginTop="2dp" />
+                        android:textColor="#8B949E"
+                        android:textSize="9.5sp" />
                 </LinearLayout>
 
-                <!-- Metric: Odometer -->
+                <!-- Kecepatan -->
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
+                    android:layout_marginEnd="6dp"
                     android:layout_weight="1"
+                    android:background="@drawable/bg_glass_inner"
+                    android:gravity="center"
                     android:orientation="vertical"
-                    android:background="#161b26"
-                    android:padding="8dp"
-                    android:layout_marginStart="4dp">
+                    android:paddingVertical="10dp">
+
+                    <TextView
+                        android:id="@+id/tvTeleSpeed"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="sans-serif-black"
+                        android:text="0"
+                        android:textColor="#FFFFFF"
+                        android:textSize="18sp" />
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="ODOMETER"
-                        android:textColor="@color/text_muted"
-                        android:textSize="9sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/tvLiveOdo"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="-- km"
-                        android:textColor="@color/text_primary"
-                        android:textSize="16sp"
-                        android:textStyle="bold"
-                        android:layout_marginTop="2dp" />
+                        android:text="KM/H"
+                        android:textColor="#8B949E"
+                        android:textSize="9.5sp" />
                 </LinearLayout>
-            </LinearLayout>
 
-            <!-- Row 2: Kecepatan, Suhu, Kunci -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginBottom="12dp">
-
+                <!-- Odometer -->
                 <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
+                    android:background="@drawable/bg_glass_inner"
+                    android:gravity="center"
                     android:orientation="vertical"
-                    android:background="#161b26"
-                    android:padding="8dp"
-                    android:layout_marginEnd="4dp">
+                    android:paddingVertical="10dp">
+
+                    <TextView
+                        android:id="@+id/tvTeleOdo"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="sans-serif-black"
+                        android:text="--"
+                        android:textColor="#E6EDF3"
+                        android:textSize="18sp" />
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="SPEED"
-                        android:textColor="@color/text_muted"
-                        android:textSize="9sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/tvLiveSpeed"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="0 km/h"
-                        android:textColor="@color/neon_amber"
-                        android:textSize="14sp"
-                        android:textStyle="bold"
-                        android:layout_marginTop="2dp" />
+                        android:text="ODO (KM)"
+                        android:textColor="#8B949E"
+                        android:textSize="9.5sp" />
                 </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical"
-                    android:background="#161b26"
-                    android:padding="8dp"
-                    android:layout_marginStart="4dp"
-                    android:layout_marginEnd="4dp">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="SUHU NTC"
-                        android:textColor="@color/text_muted"
-                        android:textSize="9sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/tvLiveTemp"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Normal"
-                        android:textColor="@color/neon_cyan"
-                        android:textSize="14sp"
-                        android:textStyle="bold"
-                        android:layout_marginTop="2dp" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical"
-                    android:background="#161b26"
-                    android:padding="8dp"
-                    android:layout_marginStart="4dp">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="KUNCI"
-                        android:textColor="@color/text_muted"
-                        android:textSize="9sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/tvLiveLock"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Standby"
-                        android:textColor="@color/text_primary"
-                        android:textSize="14sp"
-                        android:textStyle="bold"
-                        android:layout_marginTop="2dp" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnConnectBleGatt"
-                android:layout_width="match_parent"
-                android:layout_height="44dp"
-                android:text="⚡ Hubungkan Saluran BLE Telemetri"
-                android:textAllCaps="false"
-                android:textColor="@color/bg_dark"
-                android:textSize="12sp"
-                android:textStyle="bold"
-                app:backgroundTint="@color/neon_green"
-                app:cornerRadius="8dp" />
-        </LinearLayout>
-
-        <!-- ================= CARD 1: BLE HARDWARE SNIFFER ================= -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:background="@drawable/bg_card_modern"
-            android:padding="14dp"
-            android:layout_marginBottom="12dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:layout_marginBottom="8dp">
-
-                <ImageView
-                    android:layout_width="22dp"
-                    android:layout_height="22dp"
-                    android:src="@drawable/ic_radar"
-                    android:layout_marginEnd="10dp" />
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Bluetooth LE Hardware Radar"
-                        android:textColor="@color/text_title"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Mendeteksi beacon Desay SV, DDKA, dan Speedometer"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnScanBle"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:text="Mulai Pemindaian BLE Radar"
-                android:textAllCaps="false"
-                android:textColor="@color/bg_dark"
-                android:textSize="13sp"
-                android:textStyle="bold"
-                app:backgroundTint="@color/neon_cyan"
-                app:cornerRadius="10dp"
-                app:icon="@drawable/ic_radar"
-                app:iconTint="@color/bg_dark"
-                app:iconGravity="textStart" />
-        </LinearLayout>
-
-        <!-- ================= CARD 2: WI-FI P2P & PORT PROBE ================= -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:background="@drawable/bg_card_modern"
-            android:padding="14dp"
-            android:layout_marginBottom="12dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:layout_marginBottom="8dp">
-
-                <ImageView
-                    android:layout_width="22dp"
-                    android:layout_height="22dp"
-                    android:src="@drawable/ic_wifi_p2p"
-                    android:layout_marginEnd="10dp" />
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Wi-Fi Direct P2P &amp; Port Probe"
-                        android:textColor="@color/text_title"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Deteksi Group Owner &amp; Scan port streaming speedometer"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <!-- Target IP Input -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:background="@drawable/bg_terminal"
-                android:paddingHorizontal="12dp"
-                android:paddingVertical="8dp"
-                android:layout_marginBottom="10dp">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="HOST IP:"
-                    android:textColor="@color/neon_cyan"
-                    android:textSize="11sp"
-                    android:fontFamily="monospace"
-                    android:textStyle="bold"
-                    android:layout_marginEnd="8dp" />
-
-                <EditText
-                    android:id="@+id/etTargetIp"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="192.168.2.1"
-                    android:textColor="@color/text_primary"
-                    android:textSize="13sp"
-                    android:background="@null"
-                    android:fontFamily="monospace"
-                    android:inputType="text" />
             </LinearLayout>
 
             <LinearLayout
@@ -571,331 +803,110 @@
                 android:orientation="horizontal">
 
                 <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnProbeWifi"
+                    android:id="@+id/btnUnlockBike"
+                    style="@style/Widget.Material3.Button.TonalButton"
                     android:layout_width="0dp"
-                    android:layout_height="46dp"
-                    android:layout_weight="1.3"
-                    android:text="⚡ Sambung Wi-Fi Motor"
-                    android:textAllCaps="false"
-                    android:textColor="@color/bg_dark"
-                    android:textSize="12sp"
+                    android:layout_height="40dp"
+                    android:layout_marginEnd="6dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="⚡ Sync Telemetri BLE"
+                    android:textColor="#00E676"
+                    android:textSize="11.5sp"
                     android:textStyle="bold"
-                    app:backgroundTint="@color/neon_cyan"
-                    app:cornerRadius="8dp"
-                    android:layout_marginEnd="6dp" />
+                    app:backgroundTint="#122822"
+                    app:cornerRadius="10dp" />
 
                 <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnScanPorts"
+                    android:id="@+id/btnLockBike"
+                    style="@style/Widget.Material3.Button.TonalButton"
                     android:layout_width="0dp"
-                    android:layout_height="46dp"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="6dp"
                     android:layout_weight="1"
-                    android:text="Scan Port Stream"
-                    android:textAllCaps="false"
-                    android:textColor="@color/bg_dark"
-                    android:textSize="12sp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="📡 Kueri Wi-Fi BLE"
+                    android:textColor="#00E5FF"
+                    android:textSize="11.5sp"
                     android:textStyle="bold"
-                    app:backgroundTint="@color/neon_green"
-                    app:cornerRadius="8dp"
-                    android:layout_marginStart="6dp" />
+                    app:backgroundTint="#122230"
+                    app:cornerRadius="10dp" />
             </LinearLayout>
         </LinearLayout>
 
-        <!-- ================= CARD 3: NAVIGATION PROJECTION BRIDGE ================= -->
+        <!-- ==================== 5. LOG DIAGNOSTIK RINGKAS ==================== -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:background="@drawable/bg_glass_card"
             android:orientation="vertical"
-            android:background="@drawable/bg_card_modern"
-            android:padding="14dp"
-            android:layout_marginBottom="12dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:layout_marginBottom="10dp">
-
-                <ImageView
-                    android:layout_width="22dp"
-                    android:layout_height="22dp"
-                    android:src="@drawable/ic_speedometer"
-                    android:layout_marginEnd="10dp" />
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Navi Projection Bridge"
-                        android:textColor="@color/text_title"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Ganti AMap dengan Google Maps / Waze"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
-                </LinearLayout>
-
-                <TextView
-                    android:id="@+id/tvStreamBadge"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="STANDBY"
-                    android:textColor="@color/neon_amber"
-                    android:textSize="10sp"
-                    android:fontFamily="monospace"
-                    android:textStyle="bold"
-                    android:paddingHorizontal="8dp"
-                    android:paddingVertical="3dp"
-                    android:background="@drawable/badge_bg" />
-            </LinearLayout>
-
-            <!-- Stream Parameters Summary -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Desay SV Native 960x360 @ 30 FPS | Dual Socket: 9527 (Ctrl) + 9528 (Video)"
-                android:textColor="@color/text_muted"
-                android:textSize="10.5sp"
-                android:fontFamily="monospace"
-                android:layout_marginBottom="10dp" />
-
-            <!-- Live HUD Cockpit 960x360 Preview -->
-            <com.umox.app.ui.HudPreviewView
-                android:id="@+id/hudPreview"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="#080c16"
-                android:layout_marginBottom="12dp" />
-
-            <!-- Action 1: Hero Button - NATIVE ANDROID AUTO OMOWAY -->
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnStartAndroidAuto"
-                android:layout_width="match_parent"
-                android:layout_height="56dp"
-                android:text="🚀 MULAI ANDROID AUTO OMOWAY (60 FPS)"
-                android:textAllCaps="false"
-                android:textColor="@color/bg_dark"
-                android:textSize="14sp"
-                android:textStyle="bold"
-                app:backgroundTint="@color/neon_cyan"
-                app:cornerRadius="10dp"
-                android:layout_marginBottom="8dp" />
-
-            <!-- Row: Open AA Settings & Custom HUD Mode -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginBottom="8dp">
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnOpenAaSettings"
-                    android:layout_width="0dp"
-                    android:layout_height="44dp"
-                    android:layout_weight="1.1"
-                    android:text="⚙ Setup Android Auto"
-                    android:textAllCaps="false"
-                    android:textColor="@color/text_primary"
-                    android:textSize="11.5sp"
-                    android:textStyle="bold"
-                    app:backgroundTint="@color/surface_card_elevated"
-                    app:strokeColor="@color/neon_cyan"
-                    app:strokeWidth="1dp"
-                    app:cornerRadius="8dp"
-                    android:layout_marginEnd="4dp" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnStartHud"
-                    android:layout_width="0dp"
-                    android:layout_height="44dp"
-                    android:layout_weight="1"
-                    android:text="📟 Mode Custom HUD"
-                    android:textAllCaps="false"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="11.5sp"
-                    app:backgroundTint="@color/surface_card_elevated"
-                    app:strokeColor="@color/card_stroke"
-                    app:strokeWidth="1dp"
-                    app:cornerRadius="8dp"
-                    android:layout_marginStart="4dp" />
-            </LinearLayout>
-
-            <!-- Action 2 & 3: Cast Layar HP & Test Baseline -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginBottom="8dp">
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnStartStream"
-                    android:layout_width="0dp"
-                    android:layout_height="48dp"
-                    android:layout_weight="1"
-                    android:text="📱 Cast Layar HP"
-                    android:textAllCaps="false"
-                    android:textColor="@color/text_primary"
-                    android:textSize="12sp"
-                    android:textStyle="bold"
-                    app:backgroundTint="@color/surface_card_elevated"
-                    app:strokeColor="@color/card_stroke"
-                    app:strokeWidth="1dp"
-                    app:cornerRadius="8dp"
-                    android:layout_marginEnd="4dp" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnTestPattern"
-                    android:layout_width="0dp"
-                    android:layout_height="48dp"
-                    android:layout_weight="1"
-                    android:text="🧪 Test Baseline OK"
-                    android:textAllCaps="false"
-                    android:textColor="@color/neon_green"
-                    android:textSize="12sp"
-                    android:textStyle="bold"
-                    app:backgroundTint="@color/surface_card_elevated"
-                    app:strokeColor="@color/card_stroke"
-                    app:strokeWidth="1dp"
-                    app:cornerRadius="8dp"
-                    android:layout_marginStart="4dp" />
-            </LinearLayout>
-
-            <!-- Navigation & Stop Actions -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnOpenGoogleMaps"
-                    android:layout_width="0dp"
-                    android:layout_height="44dp"
-                    android:layout_weight="1.2"
-                    android:text="🗺️ Buka Google Maps"
-                    android:textAllCaps="false"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="11.5sp"
-                    app:backgroundTint="@color/surface_card_elevated"
-                    app:strokeColor="@color/card_stroke"
-                    app:strokeWidth="1dp"
-                    app:cornerRadius="8dp"
-                    android:layout_marginEnd="4dp" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnStopAllStream"
-                    android:layout_width="0dp"
-                    android:layout_height="44dp"
-                    android:layout_weight="1"
-                    android:text="⏹ Hentikan Stream"
-                    android:textAllCaps="false"
-                    android:textColor="@color/neon_red"
-                    android:textSize="11.5sp"
-                    android:textStyle="bold"
-                    app:backgroundTint="@color/surface_card_elevated"
-                    app:strokeColor="@color/neon_red"
-                    app:strokeWidth="1dp"
-                    app:cornerRadius="8dp"
-                    android:layout_marginStart="4dp" />
-            </LinearLayout>
-        </LinearLayout>
-
-        <!-- ================= CARD 4: LIVE TERMINAL CONSOLE ================= -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:background="@drawable/bg_card_modern"
             android:padding="14dp">
 
-            <!-- Terminal Header Toolbar -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:layout_marginBottom="10dp">
+                android:orientation="horizontal"
+                android:layout_marginBottom="8dp">
 
                 <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="● LIVE PROTOCOL LOG"
-                    android:textColor="@color/neon_green"
-                    android:textSize="11sp"
-                    android:textStyle="bold"
-                    android:letterSpacing="0.06" />
-
-                <View
                     android:layout_width="0dp"
-                    android:layout_height="0dp"
-                    android:layout_weight="1" />
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="LOG DIAGNOSTIK PROTOKOL"
+                    android:textColor="#8B949E"
+                    android:textSize="10.5sp"
+                    android:letterSpacing="0.06"
+                    android:textStyle="bold" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnCopyLog"
                     style="@style/Widget.Material3.Button.TextButton"
                     android:layout_width="wrap_content"
-                    android:layout_height="32dp"
-                    android:text="Copy"
-                    android:textColor="@color/neon_cyan"
-                    android:textSize="11sp"
+                    android:layout_height="30dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
                     android:minWidth="0dp"
                     android:paddingHorizontal="8dp"
-                    android:paddingVertical="0dp" />
+                    android:text="Salin"
+                    android:textColor="#00E5FF"
+                    android:textSize="11sp" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnClearLog"
                     style="@style/Widget.Material3.Button.TextButton"
                     android:layout_width="wrap_content"
-                    android:layout_height="32dp"
-                    android:text="Clear"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="11sp"
+                    android:layout_height="30dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
                     android:minWidth="0dp"
                     android:paddingHorizontal="8dp"
-                    android:paddingVertical="0dp" />
+                    android:text="Bersihkan"
+                    android:textColor="#8B949E"
+                    android:textSize="11sp" />
             </LinearLayout>
 
-            <!-- Monospace Terminal Screen -->
-            <FrameLayout
+            <ScrollView
+                android:id="@+id/scrollConsole"
                 android:layout_width="match_parent"
-                android:layout_height="220dp"
-                android:background="@drawable/bg_terminal"
+                android:layout_height="130dp"
+                android:background="@drawable/bg_glass_inner"
                 android:padding="10dp">
 
-                <ScrollView
-                    android:id="@+id/scrollLog"
+                <TextView
+                    android:id="@+id/tvConsoleLog"
                     android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:fillViewport="true">
-
-                    <TextView
-                        android:id="@+id/tvConsoleLog"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="[UMOX v1.0.0 siap]\n» Klik 'Mulai Pemindaian BLE Radar' saat dekat motor.\n» Hubungkan Omoway sekali, lalu klik 'Listen Wi-Fi P2P' untuk menangkap IP dan port video speedometer."
-                        android:textColor="@color/terminal_text"
-                        android:textSize="11.5sp"
-                        android:fontFamily="monospace"
-                        android:lineSpacingExtra="3dp" />
-                </ScrollView>
-            </FrameLayout>
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="* Sentuh &amp; tahan konsol untuk menyalin log."
-                android:textColor="@color/text_muted"
-                android:textSize="10sp"
-                android:layout_marginTop="6dp" />
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:lineSpacingExtra="2dp"
+                    android:text="[INIT] UMOX Auto 2.0 siap.\n"
+                    android:textColor="#7EE787"
+                    android:textIsSelectable="true"
+                    android:textSize="10.5sp" />
+            </ScrollView>
         </LinearLayout>
 
     </LinearLayout>
-</androidx.core.widget.NestedScrollView>
+</ScrollView>

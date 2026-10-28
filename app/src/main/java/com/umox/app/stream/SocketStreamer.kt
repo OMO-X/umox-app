@@ -3,107 +3,178 @@ package com.umox.app.stream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.BufferedOutputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
-import com.umox.app.config.AppConfig
 
+/**
+ * Klien TCP berkecepatan tinggi untuk Port 9528 (Saluran Video H.264 Desay SV).
+ *
+ * Optimasi Performa:
+ * - Zero-allocation header framing (8-byte LE: `[Channel=2 (4B)][Length (4B)]`).
+ * - `TCP_NODELAY` + `IPTOS_LOWDELAY (0x10)` + `BufferedOutputStream(64KB)` sehingga
+ *   header 8-byte dan payload NALU terkirim dalam 1 syscall TCP tunggal tanpa pecah.
+ * - Telemetri FPS & Bitrate real-time untuk indikator UI.
+ */
 class SocketStreamer(
-    private val targetIp: String = AppConfig.defaultClusterIp,
-    private val targetPort: Int = AppConfig.defaultVideoPort,
+    private val targetIp: String = "192.168.2.1",
+    private val targetPort: Int = 9528,
     private val onLog: (String) -> Unit
 ) {
-    private var tcpSocket: Socket? = null
+    companion object {
+        @Volatile
+        var currentFps: Int = 0
+            private set
+
+        @Volatile
+        var currentKbps: Int = 0
+            private set
+    }
+
+    private var socket: Socket? = null
     private var outputStream: OutputStream? = null
-    @Volatile
-    var isConnected = false
-        private set
-    private var framesSent = 0L
+    private var isConnected = false
+    private var heartbeatJob: Job? = null
+    private val scope = CoroutineScope(Dispatchers.IO)
+    private val writeLock = Any()
+
+    // Reusable 8-byte header buffer (menghindari alokasi ByteBuffer di setiap frame)
+    private val headerBuf = ByteArray(8)
+    private val heartbeatHeader = byteArrayOf(0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
+
+    private var frameCountWindow = 0
+    private var byteCountWindow = 0L
+    private var lastWindowTime = System.currentTimeMillis()
+    private var totalFramesSent = 0L
 
     var onConnectionLost: (() -> Unit)? = null
 
-    private var readJob: kotlinx.coroutines.Job? = null
-
     suspend fun connect() = withContext(Dispatchers.IO) {
-        disconnect()
-        framesSent = 0L
-
         try {
-            onLog("Membuka koneksi TCP Video Stream ke $targetIp:$targetPort...")
-            val socket = Socket()
-            socket.tcpNoDelay = true
-            socket.sendBufferSize = 128 * 1024
-            socket.connect(InetSocketAddress(targetIp, targetPort), 3000)
-            tcpSocket = socket
-            outputStream = socket.getOutputStream()
-            isConnected = true
-            onLog("✔ Terhubung ke Saluran Video Speedometer ($targetIp:$targetPort) via TCP!")
+            disconnect()
+            onLog("Menghubungkan soket video TCP ke $targetIp:$targetPort...")
+            val s = Socket()
+            s.tcpNoDelay = true
+            try {
+                s.trafficClass = 0x10 // IPTOS_LOWDELAY
+                s.sendBufferSize = 262144
+            } catch (_: Exception) {}
+            s.connect(InetSocketAddress(targetIp, targetPort), 3500)
 
-            readJob = CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    val input = socket.getInputStream()
-                    val buf = ByteArray(1024)
-                    while (isActive && isConnected) {
-                        val n = input.read(buf)
-                        if (n < 0) {
-                            onLog("Saluran video ditutup oleh speedometer (EOF).")
-                            break
-                        }
-                    }
-                } catch (_: Exception) {}
+            synchronized(writeLock) {
+                socket = s
+                outputStream = BufferedOutputStream(s.getOutputStream(), 65536)
+                isConnected = true
+                frameCountWindow = 0
+                byteCountWindow = 0L
+                lastWindowTime = System.currentTimeMillis()
             }
+
+            onLog("✔ Soket Video (Port $targetPort) terhubung [TCP_NODELAY + LOWDELAY].")
+            startHeartbeatLoop()
         } catch (e: Exception) {
+            onLog("✖ Gagal terhubung ke soket video $targetPort: ${e.message}")
             isConnected = false
-            onLog("Gagal terhubung ke soket video ($targetIp:$targetPort): ${e.message}")
         }
     }
 
-    fun sendH264Packet(packet: ByteArray) {
-        if (!isConnected) return
+    /**
+     * Detak jantung (Heartbeat) video: Channel 0, Length 0 setiap 800 ms.
+     */
+    private fun startHeartbeatLoop() {
+        heartbeatJob?.cancel()
+        heartbeatJob = scope.launch {
+            while (isActive && isConnected) {
+                delay(800)
+                if (isConnected) {
+                    try {
+                        synchronized(writeLock) {
+                            outputStream?.write(heartbeatHeader)
+                            outputStream?.flush()
+                        }
+                    } catch (e: Exception) {
+                        handleSocketError("Heartbeat gagal: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Mengirimkan paket H.264 Annex-B (sudah disanitasi) ke Channel 2.
+     */
+    fun sendH264Packet(h264Data: ByteArray) {
+        if (!isConnected || h264Data.isEmpty()) return
 
         try {
-            val os = outputStream ?: return
+            synchronized(writeLock) {
+                val out = outputStream ?: return
+                val len = h264Data.size
 
-            // Desay SV Video Framing: 8-byte Little-Endian Header
-            // Byte 0-3: Subsystem Channel ID = 2 (Video Stream)
-            // Byte 4-7: Payload Length = packet.size
-            val header = java.nio.ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-            header.putInt(2)
-            header.putInt(packet.size)
+                // Channel ID = 2 (Little-Endian)
+                headerBuf[0] = 2
+                headerBuf[1] = 0
+                headerBuf[2] = 0
+                headerBuf[3] = 0
 
-            os.write(header.array())
-            os.write(packet)
-            os.flush()
-            framesSent++
+                // Payload Length (Little-Endian)
+                headerBuf[4] = (len and 0xFF).toByte()
+                headerBuf[5] = ((len ushr 8) and 0xFF).toByte()
+                headerBuf[6] = ((len ushr 16) and 0xFF).toByte()
+                headerBuf[7] = ((len ushr 24) and 0xFF).toByte()
 
-            if (framesSent == 1L) {
-                onLog("► Frame video pertama (${packet.size} bytes) terkirim ke speedometer ($targetPort)!")
-            } else if (framesSent % 30L == 0L) {
-                val sec = framesSent / 30L
-                onLog("Streaming video aktif: $framesSent frame (~$sec detik) terkirim ke speedometer ($targetPort).")
+                out.write(headerBuf, 0, 8)
+                out.write(h264Data, 0, len)
+                out.flush()
+
+                totalFramesSent++
+                frameCountWindow++
+                byteCountWindow += (8 + len)
+
+                val now = System.currentTimeMillis()
+                val elapsed = now - lastWindowTime
+                if (elapsed >= 1000L) {
+                    currentFps = ((frameCountWindow * 1000L) / elapsed).toInt()
+                    currentKbps = ((byteCountWindow * 8L) / elapsed).toInt()
+                    frameCountWindow = 0
+                    byteCountWindow = 0L
+                    lastWindowTime = now
+                }
             }
         } catch (e: Exception) {
-            val errMsg = e.message ?: "Broken pipe"
-            onLog("⚠ Gangguan transmisi video ($errMsg). Mengatur ulang soket video...")
-            disconnect()
-            onConnectionLost?.invoke()
+            handleSocketError("Transmisi video terputus: ${e.message}")
         }
+    }
+
+    private fun handleSocketError(reason: String) {
+        if (!isConnected) return
+        isConnected = false
+        currentFps = 0
+        currentKbps = 0
+        onLog("⚠ Soket video ($targetPort) error: $reason")
+        onConnectionLost?.invoke()
     }
 
     fun disconnect() {
         isConnected = false
-        readJob?.cancel()
-        readJob = null
-        try {
-            outputStream?.close()
-            tcpSocket?.close()
-        } catch (_: Exception) {
-            // Cleanup
+        currentFps = 0
+        currentKbps = 0
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+        synchronized(writeLock) {
+            try {
+                outputStream?.close()
+            } catch (_: Exception) {}
+            try {
+                socket?.close()
+            } catch (_: Exception) {}
+            outputStream = null
+            socket = null
         }
-        outputStream = null
-        tcpSocket = null
     }
 }

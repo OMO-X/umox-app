@@ -4,240 +4,188 @@ import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.media.projection.MediaProjectionManager
-import android.net.Uri
+import android.net.ConnectivityManager
 import android.os.Build
 import android.os.Bundle
-import android.widget.EditText
-import android.widget.ScrollView
-import android.widget.TextView
+import android.os.Handler
+import android.os.Looper
+import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.lifecycleScope
-import com.google.android.material.button.MaterialButton
-import android.annotation.SuppressLint
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
-import androidx.appcompat.app.AlertDialog
-import androidx.core.app.NotificationManagerCompat
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
+import com.umox.app.aa.AaHeadlessReceiver
 import com.umox.app.ble.BleDeviceItem
 import com.umox.app.ble.BleSniffer
 import com.umox.app.ble.GattExplorer
-import com.umox.app.probe.PortScanner
 import com.umox.app.config.AppConfig
+import com.umox.app.databinding.ActivityMainBinding
 import com.umox.app.stream.ScreenCastService
+import com.umox.app.stream.SocketStreamer
+import com.umox.app.stream.StreamMode
 import com.umox.app.wifi.WifiP2pProbe
-import kotlinx.coroutines.launch
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var tvConsoleLog: TextView
-    private lateinit var scrollLog: ScrollView
-    private lateinit var tvStatusBadge: TextView
-    private lateinit var tvMetricBle: TextView
-    private lateinit var tvMetricIp: TextView
-    private lateinit var tvMetricPort: TextView
-    private lateinit var tvStreamBadge: TextView
-
-    // Live Telemetry Views
-    private lateinit var tvLiveBattery: TextView
-    private lateinit var tvLiveRange: TextView
-    private lateinit var tvLiveOdo: TextView
-    private lateinit var tvLiveSpeed: TextView
-    private lateinit var tvLiveTemp: TextView
-    private lateinit var tvLiveLock: TextView
-    private lateinit var btnConnectBleGatt: MaterialButton
-
-    private lateinit var hudPreview: com.umox.app.ui.HudPreviewView
-    private lateinit var btnStartAndroidAuto: MaterialButton
-    private lateinit var btnOpenAaSettings: MaterialButton
-    private lateinit var btnStartHud: MaterialButton
-    private lateinit var btnStartStream: MaterialButton
-    private lateinit var btnTestPattern: MaterialButton
-    private lateinit var btnStopAllStream: MaterialButton
-    private lateinit var btnOpenGoogleMaps: MaterialButton
-
-    private lateinit var btnScanBle: MaterialButton
-    private lateinit var btnProbeWifi: MaterialButton
-    private lateinit var btnScanPorts: MaterialButton
-    private lateinit var btnClearLog: MaterialButton
-    private lateinit var btnCopyLog: MaterialButton
-    private lateinit var etTargetIp: EditText
-
+    private lateinit var binding: ActivityMainBinding
     private lateinit var bleSniffer: BleSniffer
     private lateinit var gattExplorer: GattExplorer
     private lateinit var wifiP2pProbe: WifiP2pProbe
-    private lateinit var portScanner: PortScanner
-    private lateinit var mediaProjectionManager: MediaProjectionManager
-    private lateinit var mapTileManager: com.umox.app.map.MapTileManager
 
-    private var isBleScanning = false
+    private var extractedSsid: String = "DIRECT-OMO-*"
+    private var extractedPass: String = "12345678"
     private val discoveredBleDevices = mutableMapOf<String, BleDeviceItem>()
+    private var hasAutoConnectedBle = false
 
-    // Launcher untuk izin tangkap layar (MediaProjection)
-    private val screenCaptureLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-            val ip = etTargetIp.text.toString().trim().ifEmpty { AppConfig.defaultClusterIp }
-            log("Izin rekam layar disetujui. Meluncurkan ScreenCastService ke $ip:9528 (Video) / 9527 (Ctrl)...")
+    @Volatile
+    private var isAaServerListening: Boolean = false
 
-            val serviceIntent = Intent(this, ScreenCastService::class.java).apply {
-                action = ScreenCastService.ACTION_START_SCREEN
-                putExtra(ScreenCastService.EXTRA_RESULT_CODE, result.resultCode)
-                putExtra(ScreenCastService.EXTRA_RESULT_DATA, result.data)
-                putExtra(ScreenCastService.EXTRA_TARGET_IP, ip)
-                putExtra(ScreenCastService.EXTRA_VIDEO_PORT, 9528)
-                putExtra(ScreenCastService.EXTRA_CTRL_PORT, 9527)
-            }
+    @Volatile
+    private var isMotorNetworkReady: Boolean = false
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val probeExecutor = Executors.newSingleThreadExecutor()
+    private var isTickerRunning = false
 
-            updateStreamUiState(com.umox.app.stream.StreamMode.SCREEN_MIRROR)
-            log("★ Mirroring layar HP aktif. Silakan buka Google Maps atau Waze.")
-        } else {
-            log("Izin rekam layar dibatalkan.")
+    private val statusTicker = object : Runnable {
+        override fun run() {
+            if (!isTickerRunning) return
+            probeAaServerAsync()
+            refreshDashboardState()
+            uiHandler.postDelayed(this, 1200L)
         }
     }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val grantedCount = permissions.values.count { it }
-        log("✔ Izin sistem diperbarui ($grantedCount/${permissions.size} aktif).")
-        startAutoRadar()
+        val allGranted = permissions.entries.all { it.value }
+        if (allGranted) {
+            appendLog("✔ Semua izin sistem (BLE, Lokasi, Wi-Fi Direct) aktif.")
+            startAutoDiscovery()
+        } else {
+            appendLog("⚠ Beberapa izin belum diberikan, mencoba memindai dengan izin yang ada...")
+            startAutoDiscovery()
+        }
+    }
+
+    private val mediaProjectionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            startScreenCastService(result.resultCode, result.data!!)
+        } else {
+            appendLog("✖ Izin perekaman layar dibatalkan.")
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
         AppConfig.loadFromPreferences(this)
-        initViews()
-        initModules()
+        initManagers()
+        setupClickListeners()
+        checkAndRequestPermissions()
 
-        if (AppConfig.targetBleMac.isNotBlank()) {
-            log("★ Memuat target BLE tersimpan: ${AppConfig.targetBleMac}")
+        ScreenCastService.onLogCallback = { msg ->
+            runOnUiThread { appendLog(msg) }
         }
-        if (AppConfig.targetP2pMac.isNotBlank()) {
-            log("★ Memuat target Wi-Fi Direct tersimpan: ${AppConfig.targetP2pMac}")
+        ScreenCastService.onStateChangedCallback = {
+            runOnUiThread { refreshDashboardState() }
         }
 
-        checkPermissions()
-        setupListeners()
+        refreshDashboardState()
     }
 
     override fun onResume() {
         super.onResume()
-        wifiP2pProbe.checkConnectionState()
+        isTickerRunning = true
+        uiHandler.post(statusTicker)
     }
 
-    private fun initViews() {
-        tvConsoleLog = findViewById(R.id.tvConsoleLog)
-        scrollLog = findViewById(R.id.scrollLog)
-        tvStatusBadge = findViewById(R.id.tvStatusBadge)
-        tvMetricBle = findViewById(R.id.tvMetricBle)
-        tvMetricIp = findViewById(R.id.tvMetricIp)
-        tvMetricPort = findViewById(R.id.tvMetricPort)
-        tvStreamBadge = findViewById(R.id.tvStreamBadge)
-
-        // Telemetry views
-        tvLiveBattery = findViewById(R.id.tvLiveBattery)
-        tvLiveRange = findViewById(R.id.tvLiveRange)
-        tvLiveOdo = findViewById(R.id.tvLiveOdo)
-        tvLiveSpeed = findViewById(R.id.tvLiveSpeed)
-        tvLiveTemp = findViewById(R.id.tvLiveTemp)
-        tvLiveLock = findViewById(R.id.tvLiveLock)
-        btnConnectBleGatt = findViewById(R.id.btnConnectBleGatt)
-
-        btnScanBle = findViewById(R.id.btnScanBle)
-        btnProbeWifi = findViewById(R.id.btnProbeWifi)
-        btnScanPorts = findViewById(R.id.btnScanPorts)
-        btnClearLog = findViewById(R.id.btnClearLog)
-        btnCopyLog = findViewById(R.id.btnCopyLog)
-        hudPreview = findViewById(R.id.hudPreview)
-        btnStartAndroidAuto = findViewById(R.id.btnStartAndroidAuto)
-        btnOpenAaSettings = findViewById(R.id.btnOpenAaSettings)
-        btnStartHud = findViewById(R.id.btnStartHud)
-        btnStartStream = findViewById(R.id.btnStartStream)
-        btnTestPattern = findViewById(R.id.btnTestPattern)
-        btnStopAllStream = findViewById(R.id.btnStopAllStream)
-        btnOpenGoogleMaps = findViewById(R.id.btnOpenGoogleMaps)
-        etTargetIp = findViewById(R.id.etTargetIp)
-
-        mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+    override fun onPause() {
+        super.onPause()
+        isTickerRunning = false
+        uiHandler.removeCallbacks(statusTicker)
     }
 
-    private fun initModules() {
-        ScreenCastService.onLogCallback = { msg ->
-            runOnUiThread { log(msg) }
-        }
-
-        if (ScreenCastService.currentHudRenderer == null) {
-            ScreenCastService.currentHudRenderer = com.umox.app.ui.HudDashboardRenderer(960, 360)
-        }
-        hudPreview.renderer = ScreenCastService.currentHudRenderer
-
-        hudPreview.setOnClickListener {
-            val renderer = ScreenCastService.currentHudRenderer ?: return@setOnClickListener
-            val themes = com.umox.app.ui.HudTheme.values()
-            val nextIdx = (themes.indexOf(renderer.state.theme) + 1) % themes.size
-            renderer.state.theme = themes[nextIdx]
-            log("🎨 Tema Tampilan HUD diganti ke: ${renderer.state.theme.name}")
-            hudPreview.invalidate()
-        }
-
-        hudPreview.setOnLongClickListener {
-            showThemeSelectorDialog()
-            true
-        }
+    private fun initManagers() {
+        wifiP2pProbe = WifiP2pProbe(
+            context = this,
+            onPeersDiscovered = { peers ->
+                runOnUiThread {
+                    if (peers.isNotEmpty()) {
+                        refreshDashboardState()
+                    }
+                }
+            },
+            onConnectionInfo = { info, group ->
+                isMotorNetworkReady = info.groupFormed
+                runOnUiThread {
+                    val ownerIp = info.groupOwnerAddress?.hostAddress ?: "192.168.2.1"
+                    binding.etClusterIp.setText(ownerIp)
+                    group?.networkName?.let { netName ->
+                        extractedSsid = netName
+                        binding.tvExtractedSsid.text = "SSID: $netName"
+                    }
+                    refreshDashboardState()
+                    if (info.groupFormed) {
+                        appendLog("★ Wi-Fi Direct Motor Terhubung! Gateway: $ownerIp")
+                    }
+                }
+            },
+            onLog = { msg -> runOnUiThread { appendLog("[P2P] $msg") } }
+        )
 
         gattExplorer = GattExplorer(
             context = this,
-            onLog = { msg -> runOnUiThread { log(msg) } },
-            onTelemetry = { telem ->
+            onLog = { msg -> runOnUiThread { appendLog("[GATT] $msg") } },
+            onTelemetry = { tele ->
                 runOnUiThread {
-                    telem.batteryPercent?.let {
-                        tvLiveBattery.text = "$it %"
-                        ScreenCastService.currentHudRenderer?.state?.batteryPercent = it
+                    tele.speedKmh?.let { binding.tvTeleSpeed.text = "$it" }
+                    tele.batteryPercent?.let { binding.tvTeleBat.text = "$it%" }
+                    tele.rangeKm?.let { binding.tvTeleRange.text = "$it km" }
+                    tele.odometerKm?.let {
+                        binding.tvTeleOdo.text = String.format(Locale.US, "%.1f", it)
                     }
-                    telem.rangeKm?.let {
-                        tvLiveRange.text = "$it km"
-                        ScreenCastService.currentHudRenderer?.state?.rangeKm = it
+                    tele.isLocked?.let { locked ->
+                        binding.tvTeleLockState.text = if (!locked) "STATUS: MENYALA 🔓" else "STATUS: TERKUNCI 🔒"
+                        binding.tvTeleLockState.setTextColor(
+                            Color.parseColor(if (!locked) "#00E676" else "#FFB300")
+                        )
                     }
-                    telem.odometerKm?.let { tvLiveOdo.text = "${it.toInt()} km" }
-                    telem.speedKmh?.let {
-                        tvLiveSpeed.text = "$it km/h"
-                        ScreenCastService.currentHudRenderer?.state?.speedKmh = it
-                    }
-                    telem.temperatureStatus?.let { tvLiveTemp.text = it }
-                    telem.isLocked?.let { tvLiveLock.text = if (it) "Terkunci" else "Terbuka" }
                 }
             },
             onWifiInfoFound = { ssid, pass, ip ->
                 runOnUiThread {
-                    etTargetIp.setText(ip)
-                    tvMetricIp.text = ip
-                    log("✔ Kredensial Wi-Fi Motor: SSID=$ssid, Password=$pass, IP=$ip")
-                    if (AppConfig.targetP2pMac.isNotBlank()) {
-                        log("★ Menghubungkan Wi-Fi Direct dinamis ke $ssid (${AppConfig.targetP2pMac})...")
-                        wifiP2pProbe.connectToMotor(AppConfig.targetP2pMac)
+                    if (ssid.isNotBlank()) {
+                        extractedSsid = ssid
+                        binding.tvExtractedSsid.text = "SSID: $ssid"
                     }
+                    if (pass.isNotBlank()) {
+                        extractedPass = pass
+                        binding.tvExtractedPass.text = "PASS: $pass"
+                    }
+                    if (ip.isNotBlank()) {
+                        binding.etClusterIp.setText(ip)
+                    }
+                    wifiP2pProbe.connectToMotor()
+                    refreshDashboardState()
                 }
             }
         )
@@ -245,294 +193,291 @@ class MainActivity : AppCompatActivity() {
         bleSniffer = BleSniffer(
             context = this,
             onDeviceFound = { item ->
-                runOnUiThread {
-                    if (!discoveredBleDevices.containsKey(item.address)) {
-                        discoveredBleDevices[item.address] = item
-                        if (item.isCandidate) {
-                            tvMetricBle.text = item.name.ifEmpty { item.address }
-                            log("★ [KANDIDAT OTOMOTIF] ${item.name} (${item.address}) RSSI: ${item.rssi} dBm")
-                            AppConfig.saveBleMac(this@MainActivity, item.address)
-                            // Auto-connect ke BLE motor untuk langsung membaca data
-                            gattExplorer.connectAndExplore(item.device)
-                        } else {
-                            log("• ${item.name} (${item.address}) [${item.rssi} dBm]")
-                        }
-
-                        if (item.serviceUuids.isNotEmpty()) {
-                            log("   UUIDs: ${item.serviceUuids.joinToString(", ")}")
-                        }
-                        if (item.manufacturerDataHex.isNotEmpty()) {
-                            log("   MfgData: ${item.manufacturerDataHex}")
-                        }
+                discoveredBleDevices[item.address] = item
+                if (item.isCandidate && !hasAutoConnectedBle) {
+                    hasAutoConnectedBle = true
+                    AppConfig.saveBleMac(this, item.address)
+                    runOnUiThread {
+                        appendLog("★ Kandidat Motor Ditemukan: ${item.name} (${item.address}) [${item.rssi} dBm]")
+                        bleSniffer.stopScan()
+                        gattExplorer.connectAndExplore(item.device)
                     }
                 }
             },
-            onLog = { msg -> runOnUiThread { log(msg) } }
-        )
-
-        wifiP2pProbe = WifiP2pProbe(
-            context = this,
-            onPeersDiscovered = { peers ->
-                runOnUiThread {
-                    tvStatusBadge.text = "● P2P: ${peers.size} PEERS"
-                }
-            },
-            onConnectionInfo = { info, group ->
-                runOnUiThread {
-                    group?.owner?.deviceAddress?.let { p2pMac ->
-                        AppConfig.saveP2pMac(this@MainActivity, p2pMac)
-                    }
-                    info.groupOwnerAddress?.hostAddress?.let { ip ->
-                        etTargetIp.setText(ip)
-                        tvMetricIp.text = ip
-                        log("✔ IP Speedometer terdeteksi: $ip")
-                    }
-                    tvStatusBadge.text = "● P2P CONNECTED"
-                }
-            },
-            onLog = { msg -> runOnUiThread { log(msg) } }
-        )
-
-        portScanner = PortScanner(
-            onLog = { msg -> runOnUiThread { log(msg) } }
-        )
-
-        mapTileManager = com.umox.app.map.MapTileManager(
-            context = this,
-            onMapBitmapUpdated = { bitmap ->
-                ScreenCastService.currentHudRenderer?.state?.liveMapBitmap = bitmap
-                hudPreview.postInvalidate()
-            }
+            onLog = { msg -> runOnUiThread { appendLog("[BLE] $msg") } }
         )
     }
 
-    private fun setupListeners() {
-        btnConnectBleGatt.setOnClickListener {
-            // Prioritaskan motor yang sudah dipasangkan di HP (Bonded) agar tidak salah konek ke motor lain
-            val connectedBonded = checkBondedMotorcycleDevices()
-            if (!connectedBonded) {
-                val candidate = discoveredBleDevices.values.firstOrNull { it.isCandidate }
-                    ?: discoveredBleDevices.values.firstOrNull()
-                if (candidate != null) {
-                    log("Menghubungkan ke ${candidate.name} (${candidate.address}) via GATT...")
-                    gattExplorer.connectAndExplore(candidate.device)
-                } else {
-                    log("Memulai BLE Radar untuk mencari motor...")
-                    bleSniffer.startScan()
-                    isBleScanning = true
-                    btnScanBle.text = "Hentikan Scan BLE"
-                    tvStatusBadge.text = "● SCANNING"
-                }
-            }
-        }
-        btnConnectBleGatt.setOnLongClickListener {
-            showMotorcycleSelectorDialog()
-            true
-        }
-        btnScanBle.setOnClickListener {
-            if (!isBleScanning) {
-                discoveredBleDevices.clear()
-                bleSniffer.startScan()
-                isBleScanning = true
-                btnScanBle.text = "Hentikan Scan BLE"
-                tvStatusBadge.text = "● SCANNING"
-            } else {
-                bleSniffer.stopScan()
-                isBleScanning = false
-                btnScanBle.text = "Mulai Pemindaian BLE Radar"
-                tvStatusBadge.text = "● IDLE"
-            }
-        }
-
-        btnProbeWifi.setOnClickListener {
-            log("Memeriksa status & sambungan Wi-Fi Direct Motor (DIRECT-OMO)...")
+    private fun startAutoDiscovery() {
+        try {
             wifiP2pProbe.registerAndListen()
-            if (wifiP2pProbe.isGroupConnected) {
-                tvStatusBadge.text = "● P2P CONNECTED"
+            bleSniffer.startScan()
+        } catch (e: Exception) {
+            appendLog("⚠ Auto-discovery info: ${e.message}")
+        }
+    }
+
+    private fun setupClickListeners() {
+        // Langkah 1: Buka Pengaturan Server Unit Kepala Android Auto
+        binding.btnOpenAaSettings.setOnClickListener {
+            openAndroidAutoHeadUnitServer()
+        }
+
+        // Langkah 2: Auto-Link Motor (Scan BLE + Connect Wi-Fi Direct)
+        binding.btnAutoLinkMotor.setOnClickListener {
+            appendLog("⚡ Auto-Link: Memindai BLE & menghubungkan Wi-Fi Direct motor...")
+            hasAutoConnectedBle = false
+            bleSniffer.startScan()
+            wifiP2pProbe.registerAndListen()
+            wifiP2pProbe.connectToMotor()
+        }
+
+        // Primary CTA: Mulai Android Auto
+        binding.btnStartAndroidAuto.setOnClickListener {
+            if (ScreenCastService.isStreamingActive) {
+                stopCastService()
             } else {
-                tvStatusBadge.text = "● P2P SCANNING"
+                startAndroidAutoService()
             }
         }
 
-        btnProbeWifi.setOnLongClickListener {
-            log("Memutuskan sambungan Wi-Fi Direct (Reset Group)...")
-            wifiP2pProbe.disconnectGroup()
-            tvStatusBadge.text = "● P2P DISCONNECTED"
-            true
+        // Stop Streaming
+        binding.btnStopCast.setOnClickListener {
+            stopCastService()
         }
 
-        btnScanPorts.setOnClickListener {
-            val ip = etTargetIp.text.toString().trim()
-            if (ip.isEmpty()) {
-                Toast.makeText(this, "Masukkan Host IP terlebih dahulu!", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            tvStatusBadge.text = "● SCANNING PORTS"
-            lifecycleScope.launch {
-                val openPorts = portScanner.scanHost(ip)
-                if (openPorts.isNotEmpty()) {
-                    val first = openPorts.first()
-                    tvMetricPort.text = "${first.port} (${first.description.take(10)})"
-                }
-                tvStatusBadge.text = "● SCAN COMPLETED"
-            }
-        }
-
-        btnStartAndroidAuto.setOnClickListener {
-            if (!ScreenCastService.isStreamingActive) {
-                startAndroidAutoStream()
+        // Remote Bar untuk Android Auto
+        binding.btnRemoteMaps.setOnClickListener {
+            val receiver = ScreenCastService.activeAaReceiver
+            if (receiver != null) {
+                receiver.sendKey(AaHeadlessReceiver.KEYCODE_NAVIGATION)
+                appendLog("🗺️ Mengirim perintah buka Google Maps ke Android Auto.")
             } else {
-                stopActiveStream()
+                Toast.makeText(this, "Mulai Android Auto terlebih dahulu", Toast.LENGTH_SHORT).show()
             }
         }
 
-        btnOpenAaSettings.setOnClickListener {
-            openAndroidAutoSettings()
-        }
-
-        btnStartHud.setOnClickListener {
-            if (!ScreenCastService.isStreamingActive) {
-                val ip = etTargetIp.text.toString().trim().ifEmpty { AppConfig.defaultClusterIp }
-                log("🚀 Meluncurkan HUD Cockpit Digital (960x360) ke $ip:9528 (Video) / 9527 (Ctrl)...")
-
-                val serviceIntent = Intent(this, ScreenCastService::class.java).apply {
-                    action = ScreenCastService.ACTION_START_HUD
-                    putExtra(ScreenCastService.EXTRA_TARGET_IP, ip)
-                    putExtra(ScreenCastService.EXTRA_VIDEO_PORT, 9528)
-                    putExtra(ScreenCastService.EXTRA_CTRL_PORT, 9527)
-                }
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(serviceIntent)
-                } else {
-                    startService(serviceIntent)
-                }
-
-                updateStreamUiState(com.umox.app.stream.StreamMode.HUD_COCKPIT)
+        binding.btnRemoteMusic.setOnClickListener {
+            val receiver = ScreenCastService.activeAaReceiver
+            if (receiver != null) {
+                receiver.sendKey(AaHeadlessReceiver.KEYCODE_MUSIC)
+                appendLog("🎵 Mengirim perintah buka Musik ke Android Auto.")
             } else {
-                stopActiveStream()
+                Toast.makeText(this, "Mulai Android Auto terlebih dahulu", Toast.LENGTH_SHORT).show()
             }
         }
 
-        btnStartStream.setOnClickListener {
-            if (!ScreenCastService.isStreamingActive) {
-                log("📱 Menyiapkan Screen Mirroring (Cast Layar HP) ke Speedometer...")
-                screenCaptureLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+        binding.btnRemotePlayPause.setOnClickListener {
+            val receiver = ScreenCastService.activeAaReceiver
+            if (receiver != null) {
+                receiver.sendKey(AaHeadlessReceiver.KEYCODE_MEDIA_PLAY_PAUSE)
+                appendLog("⏯ Mengirim perintah Play/Pause ke Android Auto.")
             } else {
-                stopActiveStream()
+                Toast.makeText(this, "Mulai Android Auto terlebih dahulu", Toast.LENGTH_SHORT).show()
             }
         }
 
-        btnTestPattern.setOnClickListener {
-            if (!ScreenCastService.isStreamingActive) {
-                val ip = etTargetIp.text.toString().trim().ifEmpty { AppConfig.defaultClusterIp }
-                log("🧪 Memancarkan Test Pattern Baseline (test_baseline.h264) ke $ip...")
-
-                val serviceIntent = Intent(this, ScreenCastService::class.java).apply {
-                    action = ScreenCastService.ACTION_START_PATTERN
-                    putExtra(ScreenCastService.EXTRA_TARGET_IP, ip)
-                    putExtra(ScreenCastService.EXTRA_VIDEO_PORT, 9528)
-                    putExtra(ScreenCastService.EXTRA_CTRL_PORT, 9527)
-                }
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(serviceIntent)
-                } else {
-                    startService(serviceIntent)
-                }
-
-                updateStreamUiState(com.umox.app.stream.StreamMode.TEST_PATTERN)
+        binding.btnRemoteNightMode.setOnClickListener {
+            val receiver = ScreenCastService.activeAaReceiver
+            if (receiver != null) {
+                val nextNight = !receiver.isNightModeActive
+                receiver.sendNightMode(nextNight)
+                appendLog("🌓 Tema Android Auto diubah ke: ${if (nextNight) "MALAM" else "SIANG"}")
             } else {
-                stopActiveStream()
+                Toast.makeText(this, "Mulai Android Auto terlebih dahulu", Toast.LENGTH_SHORT).show()
             }
         }
 
-        btnStopAllStream.setOnClickListener {
-            stopActiveStream()
+        // Mode Alternatif: Screen Mirroring & Test Video Baseline
+        binding.btnStartCast.setOnClickListener {
+            requestScreenCapture()
         }
 
-        btnOpenGoogleMaps.setOnClickListener {
+        binding.btnStartPattern.setOnClickListener {
+            startPatternService()
+        }
+
+        // Tombol Utilitas Jaringan Manual
+        binding.btnScanBle.setOnClickListener {
+            hasAutoConnectedBle = false
+            bleSniffer.startScan()
+        }
+
+        binding.btnConnectWifi.setOnClickListener {
+            gattExplorer.sendWifiQueryRequest()
+            wifiP2pProbe.connectToMotor()
+        }
+
+        binding.btnForceP2pConnect.setOnClickListener {
+            wifiP2pProbe.discoverPeers()
+            wifiP2pProbe.connectToMotor()
+        }
+
+        binding.btnUnbindNet.setOnClickListener {
             try {
-                val gmmIntentUri = Uri.parse("google.navigation:q=Jakarta")
-                val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri).apply {
-                    setPackage("com.google.android.apps.maps")
-                }
-                if (mapIntent.resolveActivity(packageManager) != null) {
-                    startActivity(mapIntent)
-                } else {
-                    val genericMap = Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q="))
-                    startActivity(genericMap)
-                }
-            } catch (e: Exception) {
-                Toast.makeText(this, "Gagal membuka Maps: ${e.message}", Toast.LENGTH_SHORT).show()
-            }
+                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                cm.bindProcessToNetwork(null)
+            } catch (_: Exception) {}
+            wifiP2pProbe.disconnectGroup()
+            isMotorNetworkReady = false
+            refreshDashboardState()
+            appendLog("✔ Binding jaringan direset.")
         }
 
-        btnCopyLog.setOnClickListener {
-            copyLogToClipboard()
+        // Kontrol Polling & Кueri BLE
+        binding.btnUnlockBike.setOnClickListener {
+            gattExplorer.sendPollRequest()
+            appendLog("⚡ Meminta sinkronisasi telemetri BLE motor...")
         }
 
-        btnClearLog.setOnClickListener {
-            tvConsoleLog.text = ""
-            log("Log dibersihkan.")
+        binding.btnLockBike.setOnClickListener {
+            gattExplorer.sendWifiQueryRequest()
+            appendLog("📡 Meminta kredensial Wi-Fi Direct dari BLE motor...")
         }
 
-        tvConsoleLog.setOnLongClickListener {
-            copyLogToClipboard()
-            true
+        // Log Console Actions
+        binding.btnCopyLog.setOnClickListener {
+            val logText = binding.tvConsoleLog.text.toString()
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("UMOX Log", logText))
+            Toast.makeText(this, "Log berhasil disalin", Toast.LENGTH_SHORT).show()
         }
-    }
 
-    private fun updateStreamUiState(mode: com.umox.app.stream.StreamMode) {
-        when (mode) {
-            com.umox.app.stream.StreamMode.ANDROID_AUTO -> {
-                btnStartAndroidAuto.text = "⏹ HENTIKAN ANDROID AUTO"
-                btnStartAndroidAuto.setBackgroundColor(ContextCompat.getColor(this, R.color.neon_red))
-                tvStreamBadge.text = "AA NATIVE 60FPS"
-                tvStreamBadge.setTextColor(ContextCompat.getColor(this, R.color.neon_cyan))
-            }
-            com.umox.app.stream.StreamMode.HUD_COCKPIT -> {
-                btnStartHud.text = "⏹ Hentikan HUD"
-                btnStartHud.setBackgroundColor(ContextCompat.getColor(this, R.color.neon_red))
-                tvStreamBadge.text = "HUD COCKPIT"
-                tvStreamBadge.setTextColor(ContextCompat.getColor(this, R.color.neon_cyan))
-            }
-            com.umox.app.stream.StreamMode.SCREEN_MIRROR -> {
-                btnStartStream.text = "⏹ Hentikan Cast"
-                btnStartStream.setBackgroundColor(ContextCompat.getColor(this, R.color.neon_red))
-                tvStreamBadge.text = "CAST LAYAR"
-                tvStreamBadge.setTextColor(ContextCompat.getColor(this, R.color.neon_green))
-            }
-            com.umox.app.stream.StreamMode.TEST_PATTERN -> {
-                btnTestPattern.text = "⏹ Hentikan Test"
-                btnTestPattern.setBackgroundColor(ContextCompat.getColor(this, R.color.neon_red))
-                tvStreamBadge.text = "TEST BASELINE"
-                tvStreamBadge.setTextColor(ContextCompat.getColor(this, R.color.neon_green))
-            }
-            com.umox.app.stream.StreamMode.IDLE -> {
-                btnStartAndroidAuto.text = "🚀 MULAI ANDROID AUTO OMOWAY (60 FPS)"
-                btnStartAndroidAuto.setBackgroundColor(ContextCompat.getColor(this, R.color.neon_cyan))
-                btnStartHud.text = "📟 Mode Custom HUD"
-                btnStartHud.setBackgroundColor(ContextCompat.getColor(this, R.color.surface_card_elevated))
-                btnStartStream.text = "📱 Cast Layar HP"
-                btnStartStream.setBackgroundColor(ContextCompat.getColor(this, R.color.surface_card_elevated))
-                btnTestPattern.text = "🧪 Test Baseline OK"
-                btnTestPattern.setBackgroundColor(ContextCompat.getColor(this, R.color.surface_card_elevated))
-                tvStreamBadge.text = "STANDBY"
-                tvStreamBadge.setTextColor(ContextCompat.getColor(this, R.color.neon_amber))
-            }
+        binding.btnClearLog.setOnClickListener {
+            binding.tvConsoleLog.text = ""
+            appendLog("Log dibersihkan.")
         }
     }
 
-    private fun startAndroidAutoStream() {
-        val ip = etTargetIp.text.toString().trim().ifEmpty { AppConfig.defaultClusterIp }
-        log("🚀 Meluncurkan Android Auto Native (60 FPS) ke speedometer $ip...")
+    /**
+     * Membuka halaman Android Auto Developer / Head Unit Server secara langsung.
+     */
+    private fun openAndroidAutoHeadUnitServer() {
+        val candidateIntents = listOf(
+            Intent().apply {
+                component = ComponentName(
+                    "com.google.android.projection.gearhead",
+                    "com.google.android.projection.gearhead.companion.devsettings.DeveloperSettingsActivity"
+                )
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            Intent("com.google.android.projection.gearhead.SETTINGS").apply {
+                setPackage("com.google.android.projection.gearhead")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            packageManager.getLaunchIntentForPackage("com.google.android.projection.gearhead")
+        )
+
+        for (intent in candidateIntents.filterNotNull()) {
+            try {
+                startActivity(intent)
+                appendLog("Membuka pengaturan Android Auto (Aktifkan 'Mulai server unit kepala' di titik tiga kanan atas).")
+                return
+            } catch (_: Exception) {}
+        }
+
+        Toast.makeText(
+            this,
+            "Buka Pengaturan HP -> Android Auto -> Titik Tiga -> Mulai server unit kepala",
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
+    private fun probeAaServerAsync() {
+        probeExecutor.execute {
+            var active = false
+            try {
+                Socket().use { s ->
+                    s.connect(InetSocketAddress("127.0.0.1", AaHeadlessReceiver.AA_PORT_LOCAL), 250)
+                    active = true
+                }
+            } catch (_: Exception) {
+                active = false
+            }
+            val p2pActive = wifiP2pProbe.isGroupConnected
+            if (isAaServerListening != active || isMotorNetworkReady != p2pActive) {
+                isAaServerListening = active
+                isMotorNetworkReady = p2pActive
+                uiHandler.post { refreshDashboardState() }
+            }
+        }
+    }
+
+    private fun refreshDashboardState() {
+        val isStreaming = ScreenCastService.isStreamingActive
+        val mode = ScreenCastService.currentMode
+        val fps = SocketStreamer.currentFps
+        val kbps = SocketStreamer.currentKbps
+
+        // 1. Update Step 1 (Server AA 5277)
+        val aaReady = isAaServerListening || (isStreaming && mode == StreamMode.ANDROID_AUTO)
+        binding.dotStepAa.backgroundTintList = ColorStateList.valueOf(
+            Color.parseColor(if (aaReady) "#00E676" else "#FFB300")
+        )
+        binding.tvStepAaStatus.text = if (aaReady) {
+            "✔ Server Unit Kepala Aktif (127.0.0.1:5277)"
+        } else {
+            "Tekan 'Buka AA' -> Titik 3 -> Mulai server unit kepala"
+        }
+        binding.tvStepAaStatus.setTextColor(
+            Color.parseColor(if (aaReady) "#00E676" else "#8B949E")
+        )
+
+        // 2. Update Step 2 (Motor BLE + Wi-Fi 192.168.2.1)
+        val motorReady = isMotorNetworkReady || wifiP2pProbe.isGroupConnected
+        binding.dotStepMotor.backgroundTintList = ColorStateList.valueOf(
+            Color.parseColor(if (motorReady) "#00E676" else "#00E5FF")
+        )
+        binding.tvStepMotorStatus.text = if (motorReady) {
+            "✔ Terhubung ke $extractedSsid (192.168.2.1)"
+        } else {
+            "Target: $extractedSsid • Tekan 'Auto-Link' untuk sambung"
+        }
+
+        // 3. Update Step 3 & Top Badges
+        if (isStreaming) {
+            binding.dotStepStream.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#00E676"))
+            val modeLabel = when (mode) {
+                StreamMode.ANDROID_AUTO -> "ANDROID AUTO"
+                StreamMode.SCREEN_MIRROR -> "MIRROR LAYAR"
+                StreamMode.TEST_PATTERN -> "TEST VIDEO"
+                StreamMode.IDLE -> "IDLE"
+            }
+            binding.tvConnectionBadge.text = "● LIVE: $modeLabel"
+            binding.tvConnectionBadge.setTextColor(Color.parseColor("#00E676"))
+            binding.tvStreamStatsBadge.text = "960×360 • $fps FPS • ${kbps} kbps"
+            binding.tvStreamStatsBadge.setTextColor(Color.parseColor("#00E5FF"))
+            binding.tvStepStreamStatus.text = "★ Transmisi Aktif ($fps FPS • ${kbps} kbps ke Port 9528)"
+            binding.tvStepStreamStatus.setTextColor(Color.parseColor("#00E676"))
+
+            binding.btnStopCast.visibility = View.VISIBLE
+            binding.btnStartAndroidAuto.text = "🔄  RESTART ANDROID AUTO"
+        } else {
+            binding.dotStepStream.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#4B5563"))
+            binding.tvConnectionBadge.text = if (motorReady) "● P2P SIAP" else "● SIAGA"
+            binding.tvConnectionBadge.setTextColor(
+                Color.parseColor(if (motorReady) "#00E676" else "#00E5FF")
+            )
+            binding.tvStreamStatsBadge.text = "960×360 • 30 FPS CBR"
+            binding.tvStreamStatsBadge.setTextColor(Color.parseColor("#8B949E"))
+            binding.tvStepStreamStatus.text = "Siaga • Menunggu instruksi mulai"
+            binding.tvStepStreamStatus.setTextColor(Color.parseColor("#8B949E"))
+
+            binding.btnStopCast.visibility = View.GONE
+            binding.btnStartAndroidAuto.text = "🚀  MULAI ANDROID AUTO"
+        }
+    }
+
+    private fun startAndroidAutoService() {
+        val targetIp = binding.etClusterIp.text.toString().ifBlank { AppConfig.defaultClusterIp }
+        val ctrlPort = binding.etControlPort.text.toString().toIntOrNull() ?: AppConfig.defaultControlPort
+        val videoPort = binding.etVideoPort.text.toString().toIntOrNull() ?: AppConfig.defaultVideoPort
 
         val serviceIntent = Intent(this, ScreenCastService::class.java).apply {
             action = ScreenCastService.ACTION_START_ANDROID_AUTO
-            putExtra(ScreenCastService.EXTRA_TARGET_IP, ip)
-            putExtra(ScreenCastService.EXTRA_VIDEO_PORT, 9528)
-            putExtra(ScreenCastService.EXTRA_CTRL_PORT, 9527)
+            putExtra(ScreenCastService.EXTRA_TARGET_IP, targetIp)
+            putExtra(ScreenCastService.EXTRA_CTRL_PORT, ctrlPort)
+            putExtra(ScreenCastService.EXTRA_VIDEO_PORT, videoPort)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -540,172 +485,75 @@ class MainActivity : AppCompatActivity() {
         } else {
             startService(serviceIntent)
         }
-
-        updateStreamUiState(com.umox.app.stream.StreamMode.ANDROID_AUTO)
     }
 
-    private fun openAndroidAutoSettings() {
-        try {
-            val intent = Intent().apply {
-                setClassName("com.google.android.projection.gearhead", "com.google.android.projection.gearhead.companion.settings.DefaultSettingsActivity")
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            startActivity(intent)
-            showAaSetupGuideDialog()
-        } catch (e: Exception) {
-            log("Membuka pengaturan aplikasi Android Auto: ${e.message}")
-            try {
-                val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                    data = Uri.parse("package:com.google.android.projection.gearhead")
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                startActivity(intent)
-                showAaSetupGuideDialog()
-            } catch (_: Exception) {
-                Toast.makeText(this, "Aplikasi Android Auto tidak ditemukan di HP", Toast.LENGTH_SHORT).show()
-            }
+    private fun startPatternService() {
+        val targetIp = binding.etClusterIp.text.toString().ifBlank { AppConfig.defaultClusterIp }
+        val ctrlPort = binding.etControlPort.text.toString().toIntOrNull() ?: AppConfig.defaultControlPort
+        val videoPort = binding.etVideoPort.text.toString().toIntOrNull() ?: AppConfig.defaultVideoPort
+
+        val serviceIntent = Intent(this, ScreenCastService::class.java).apply {
+            action = ScreenCastService.ACTION_START_PATTERN
+            putExtra(ScreenCastService.EXTRA_TARGET_IP, targetIp)
+            putExtra(ScreenCastService.EXTRA_CTRL_PORT, ctrlPort)
+            putExtra(ScreenCastService.EXTRA_VIDEO_PORT, videoPort)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
         }
     }
 
-    private fun showAaSetupGuideDialog() {
-        AlertDialog.Builder(this)
-            .setTitle("Petunjuk Head Unit Server")
-            .setMessage(
-                "Cara menjalankan server Android Auto di HP:\n\n" +
-                "1. Di halaman Pengaturan Android Auto, scroll ke paling bawah.\n" +
-                "2. Ketuk teks 'Versi' sebanyak 10 kali sampai Developer Mode aktif.\n" +
-                "3. Ketuk menu Titik 3 di pojok kanan atas.\n" +
-                "4. Pilih 'Start head unit server'.\n\n" +
-                "Setelah itu kembali ke UMOX dan tekan 'MULAI ANDROID AUTO'."
-            )
-            .setPositiveButton("SIAP, SAYA PAHAM", null)
-            .show()
+    private fun requestScreenCapture() {
+        val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        mediaProjectionLauncher.launch(mpManager.createScreenCaptureIntent())
     }
 
-    private fun stopActiveStream() {
+    private fun startScreenCastService(resultCode: Int, data: Intent) {
+        val targetIp = binding.etClusterIp.text.toString().ifBlank { AppConfig.defaultClusterIp }
+        val ctrlPort = binding.etControlPort.text.toString().toIntOrNull() ?: AppConfig.defaultControlPort
+        val videoPort = binding.etVideoPort.text.toString().toIntOrNull() ?: AppConfig.defaultVideoPort
+
+        val serviceIntent = Intent(this, ScreenCastService::class.java).apply {
+            action = ScreenCastService.ACTION_START_SCREEN
+            putExtra(ScreenCastService.EXTRA_RESULT_CODE, resultCode)
+            putExtra(ScreenCastService.EXTRA_RESULT_DATA, data)
+            putExtra(ScreenCastService.EXTRA_TARGET_IP, targetIp)
+            putExtra(ScreenCastService.EXTRA_CTRL_PORT, ctrlPort)
+            putExtra(ScreenCastService.EXTRA_VIDEO_PORT, videoPort)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
+    }
+
+    private fun stopCastService() {
         val stopIntent = Intent(this, ScreenCastService::class.java).apply {
             action = ScreenCastService.ACTION_STOP
         }
-        try {
-            startService(stopIntent)
-        } catch (_: Exception) {}
-        updateStreamUiState(com.umox.app.stream.StreamMode.IDLE)
-        log("⏹ Sesi streaming dihentikan. Layar speedometer kembali ke dashboard normal.")
+        startService(stopIntent)
     }
 
-    @SuppressLint("MissingPermission")
-    private fun checkBondedMotorcycleDevices(): Boolean {
-        try {
-            val btAdapter = BluetoothAdapter.getDefaultAdapter() ?: return false
-            val bonded = btAdapter.bondedDevices ?: return false
-            val omoBonded = bonded.filter { dev ->
-                val name = dev.name ?: ""
-                name.contains("OMOWAY", ignoreCase = true) ||
-                name.contains("OMO", ignoreCase = true) ||
-                name.contains("DESAY", ignoreCase = true) ||
-                AppConfig.matchesCandidateName(name) ||
-                AppConfig.matchesCandidateOui(dev.address)
-            }
-
-            if (omoBonded.isNotEmpty()) {
-                val motor = omoBonded.first()
-                log("★ TERDETEKSI MOTOR OMOWAY TERPASANG DI HP: ${motor.name} (${motor.address})")
-                AppConfig.saveBleMac(this, motor.address)
-                tvMetricBle.text = motor.name.ifEmpty { motor.address }
-                gattExplorer.connectAndExplore(motor)
-                return true
-            }
-        } catch (e: Exception) {
-            log("Pemeriksaan perangkat terpasang: ${e.message}")
-        }
-        return false
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun showMotorcycleSelectorDialog() {
-        val btAdapter = BluetoothAdapter.getDefaultAdapter()
-        val bonded = btAdapter?.bondedDevices?.toList() ?: emptyList()
-        val allDevices = (discoveredBleDevices.values.map { it.device } + bonded).distinctBy { it.address }
-
-        if (allDevices.isEmpty()) {
-            Toast.makeText(this, "Tidak ada perangkat Bluetooth terdeteksi di sekitar.", Toast.LENGTH_SHORT).show()
-            bleSniffer.startScan()
-            return
-        }
-
-        val deviceNames = allDevices.map { dev ->
-            val isBonded = bonded.any { it.address == dev.address }
-            "${dev.name ?: "Unknown"} [${dev.address}] ${if (isBonded) "★ (Terpasang)" else ""}"
-        }.toTypedArray()
-
-        AlertDialog.Builder(this)
-            .setTitle("Pilih Motor Anda (Mencegah Salah Konek)")
-            .setItems(deviceNames) { _, which ->
-                val selected = allDevices[which]
-                log("✔ Motor dipilih oleh pengguna: ${selected.name ?: selected.address} (${selected.address})")
-                AppConfig.saveBleMac(this, selected.address)
-                tvMetricBle.text = selected.name ?: selected.address
-                gattExplorer.connectAndExplore(selected)
-            }
-            .setNegativeButton("Batal", null)
-            .show()
-    }
-
-    private fun showThemeSelectorDialog() {
-        val renderer = ScreenCastService.currentHudRenderer ?: return
-        val themeNames = arrayOf(
-            "1. Android Auto Coolwalk (Nav + Spotify + WA)",
-            "2. Satelit Touring (Full Satellite View)",
-            "3. Cyberpunk Neon Cockpit",
-            "4. Minimalist Clean OLED"
+    private fun checkAndRequestPermissions() {
+        val perms = mutableListOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
         )
-        val themes = com.umox.app.ui.HudTheme.values()
-
-        AlertDialog.Builder(this)
-            .setTitle("🎨 Pilih Tema Cockpit Speedometer")
-            .setItems(themeNames) { _, which ->
-                renderer.state.theme = themes[which]
-                log("🎨 Tema Tampilan HUD diubah ke: ${themeNames[which]}")
-                hudPreview.invalidate()
-            }
-            .setNegativeButton("Tutup", null)
-            .show()
-    }
-
-    private fun checkNotificationPermission() {
-        val enabled = NotificationManagerCompat.getEnabledListenerPackages(this).contains(packageName)
-        if (!enabled) {
-            log("ℹ Izin Akses Notifikasi belum aktif. Navigasi & musik butuh izin ini untuk tampil di cluster.")
-        } else {
-            log("✔ Izin Notification Listener aktif (Google Maps & Musik siap dikirim ke cluster).")
-        }
-    }
-
-    private fun copyLogToClipboard() {
-        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val clip = ClipData.newPlainText("UMOX Sniffer Log", tvConsoleLog.text.toString())
-        cm.setPrimaryClip(clip)
-        Toast.makeText(this, "Log berhasil disalin ke Clipboard!", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun checkPermissions() {
-        val perms = mutableListOf<String>()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             perms.add(Manifest.permission.BLUETOOTH_SCAN)
             perms.add(Manifest.permission.BLUETOOTH_CONNECT)
-        } else {
-            perms.add(Manifest.permission.BLUETOOTH)
-            perms.add(Manifest.permission.BLUETOOTH_ADMIN)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             perms.add(Manifest.permission.NEARBY_WIFI_DEVICES)
             perms.add(Manifest.permission.POST_NOTIFICATIONS)
         }
-
-        perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
-        perms.add(Manifest.permission.ACCESS_COARSE_LOCATION)
 
         val needed = perms.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
@@ -714,85 +562,27 @@ class MainActivity : AppCompatActivity() {
         if (needed.isNotEmpty()) {
             permissionLauncher.launch(needed.toTypedArray())
         } else {
-            startAutoRadar()
+            startAutoDiscovery()
         }
     }
 
-    private fun startAutoRadar() {
-        checkBondedMotorcycleDevices()
-        checkNotificationPermission()
-
-        if (!isBleScanning) {
-            log("🚀 Memulai Pemindaian BLE Radar Otomatis...")
-            bleSniffer.startScan()
-            isBleScanning = true
-            btnScanBle.text = "Hentikan Scan BLE"
-            tvStatusBadge.text = "● RADAR ACTIVE"
-        }
-        wifiP2pProbe.registerAndListen()
-
-        try {
-            val locManager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
-            
-            // Muat lokasi terakhir yang diketahui saat startup
-            val lastLoc = try {
-                locManager?.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                    ?: locManager?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-            } catch (_: SecurityException) { null }
-
-            lastLoc?.let { loc ->
-                ScreenCastService.currentHudRenderer?.state?.apply {
-                    latitude = loc.latitude
-                    longitude = loc.longitude
-                }
-                mapTileManager.updateLocation(loc.latitude, loc.longitude, isSatellite = true)
-            }
-
-            locManager?.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                500L,
-                1f,
-                object : LocationListener {
-                    override fun onLocationChanged(location: Location) {
-                        val renderer = ScreenCastService.currentHudRenderer
-                        if (location.hasSpeed()) {
-                            val kmh = (location.speed * 3.6f).toInt()
-                            tvLiveSpeed.text = "$kmh km/h"
-                            renderer?.state?.speedKmh = kmh
-                        }
-                        if (location.hasBearing()) {
-                            renderer?.state?.bearing = location.bearing
-                        }
-                        renderer?.state?.latitude = location.latitude
-                        renderer?.state?.longitude = location.longitude
-
-                        val isSat = renderer?.state?.theme == com.umox.app.ui.HudTheme.SATELLITE_TOURING
-                        mapTileManager.updateLocation(location.latitude, location.longitude, isSatellite = isSat)
-                        hudPreview.postInvalidate()
-                    }
-                    override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
-                    override fun onProviderEnabled(provider: String) {}
-                    override fun onProviderDisabled(provider: String) {}
-                }
-            )
-        } catch (_: Exception) {}
-    }
-
-    private fun log(message: String) {
+    private fun appendLog(message: String) {
         val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-        val formatted = "[$time] $message\n"
-        android.util.Log.i("UMOX", message)
-        tvConsoleLog.append(formatted)
-        scrollLog.post {
-            scrollLog.fullScroll(ScrollView.FOCUS_DOWN)
+        val line = "[$time] $message\n"
+        binding.tvConsoleLog.append(line)
+        binding.scrollConsole.post {
+            binding.scrollConsole.fullScroll(View.FOCUS_DOWN)
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        isTickerRunning = false
+        uiHandler.removeCallbacks(statusTicker)
+        probeExecutor.shutdownNow()
         bleSniffer.stopScan()
-        wifiP2pProbe.unregister()
         gattExplorer.disconnect()
-        ScreenCastService.onLogCallback = null
+        wifiP2pProbe.unregister()
     }
 }
+

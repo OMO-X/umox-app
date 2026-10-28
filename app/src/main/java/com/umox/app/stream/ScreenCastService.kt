@@ -14,17 +14,17 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.umox.app.MainActivity
+import com.umox.app.aa.AaHeadlessReceiver
 import com.umox.app.config.AppConfig
-import com.umox.app.ui.HudDashboardRenderer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 enum class StreamMode {
     IDLE,
     ANDROID_AUTO,
-    HUD_COCKPIT,
     SCREEN_MIRROR,
     TEST_PATTERN
 }
@@ -33,10 +33,10 @@ class ScreenCastService : Service() {
 
     companion object {
         const val ACTION_START_ANDROID_AUTO = "com.umox.app.stream.START_ANDROID_AUTO"
-        const val ACTION_START_HUD = "com.umox.app.stream.START_HUD"
         const val ACTION_START_SCREEN = "com.umox.app.stream.START_SCREEN"
         const val ACTION_START_PATTERN = "com.umox.app.stream.START_PATTERN"
         const val ACTION_STOP = "com.umox.app.stream.STOP"
+
         const val EXTRA_RESULT_CODE = "extra_result_code"
         const val EXTRA_RESULT_DATA = "extra_result_data"
         const val EXTRA_TARGET_IP = "extra_target_ip"
@@ -46,20 +46,24 @@ class ScreenCastService : Service() {
         private const val NOTIFICATION_CHANNEL_ID = "umox_cast_channel"
         private const val NOTIFICATION_ID = 1001
 
+        @Volatile
         var isStreamingActive = false
             private set
 
+        @Volatile
         var currentMode = StreamMode.IDLE
             private set
 
-        var onLogCallback: ((String) -> Unit)? = null
+        @Volatile
+        var activeAaReceiver: AaHeadlessReceiver? = null
+            private set
 
-        var currentHudRenderer: HudDashboardRenderer? = null
+        var onLogCallback: ((String) -> Unit)? = null
+        var onStateChangedCallback: (() -> Unit)? = null
     }
 
     private var mediaProjection: MediaProjection? = null
-    private var aaReceiver: com.umox.app.aa.AaHeadlessReceiver? = null
-    private var hudEncoder: HudStreamEncoder? = null
+    private var aaReceiver: AaHeadlessReceiver? = null
     private var mediaEncoder: MediaEncoder? = null
     private var assetPlayer: H264AssetPlayer? = null
     private var socketStreamer: SocketStreamer? = null
@@ -72,9 +76,6 @@ class ScreenCastService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        if (currentHudRenderer == null) {
-            currentHudRenderer = HudDashboardRenderer(960, 360)
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -87,7 +88,7 @@ class ScreenCastService : Service() {
         when (action) {
             ACTION_START_ANDROID_AUTO -> {
                 if (!isStreamingActive) {
-                    val notif = buildNotification("Android Auto Omoway Aktif (60 FPS Native)")
+                    val notif = buildNotification("Android Auto Wireless Bridge Aktif (960x360)")
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
                     } else {
@@ -96,23 +97,12 @@ class ScreenCastService : Service() {
                     startAndroidAutoProjection(targetIp, videoPort, ctrlPort)
                 }
             }
-            ACTION_START_HUD -> {
-                if (!isStreamingActive) {
-                    val notif = buildNotification("HUD Cockpit Digital Aktif (960x360)")
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-                    } else {
-                        startForeground(NOTIFICATION_ID, notif)
-                    }
-                    startHudProjection(targetIp, videoPort, ctrlPort)
-                }
-            }
             ACTION_START_SCREEN -> {
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
                 val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
 
                 if (resultData != null && !isStreamingActive) {
-                    val notif = buildNotification("Streaming Layar HP Aktif (Mirroring)")
+                    val notif = buildNotification("Screen Mirroring Aktif (960x360)")
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
                     } else {
@@ -123,7 +113,7 @@ class ScreenCastService : Service() {
             }
             ACTION_START_PATTERN -> {
                 if (!isStreamingActive) {
-                    val notif = buildNotification("Test Pattern Baseline Speedometer Aktif")
+                    val notif = buildNotification("Test Video Baseline Aktif (960x360)")
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
                     } else {
@@ -133,11 +123,11 @@ class ScreenCastService : Service() {
                 }
             }
             ACTION_STOP -> {
-                log("⏹ Menerima sinyal Hentikan Sesi Stream...")
+                log("⏹ Menghentikan sesi streaming ke speedometer...")
                 Thread {
                     try {
                         controlChannelClient?.sendHideSignal()
-                        Thread.sleep(100)
+                        Thread.sleep(90)
                     } catch (_: Exception) {}
                     serviceScope.launch(Dispatchers.Main) {
                         stopProjection()
@@ -151,28 +141,21 @@ class ScreenCastService : Service() {
     }
 
     private fun startAndroidAutoProjection(targetIp: String, videoPort: Int, ctrlPort: Int) {
-        log("🚀 Memulai Android Auto Native (60 FPS) ke $targetIp (Video: $videoPort, Ctrl: $ctrlPort)...")
+        log("🚀 Memulai Android Auto Hardware Bridge (960x360) ke $targetIp...")
         isStreamingActive = true
         currentMode = StreamMode.ANDROID_AUTO
         isVideoStreamRunning = false
-
-        initSockets(targetIp, videoPort, ctrlPort)
-    }
-
-    private fun startHudProjection(targetIp: String, videoPort: Int, ctrlPort: Int) {
-        log("Memulai HUD Cockpit Digital (960x360) ke $targetIp (Video: $videoPort, Ctrl: $ctrlPort)...")
-        isStreamingActive = true
-        currentMode = StreamMode.HUD_COCKPIT
-        isVideoStreamRunning = false
+        onStateChangedCallback?.invoke()
 
         initSockets(targetIp, videoPort, ctrlPort)
     }
 
     private fun startPatternProjection(targetIp: String, videoPort: Int, ctrlPort: Int) {
-        log("Memulai Test Pattern Baseline ke $targetIp (Video: $videoPort, Ctrl: $ctrlPort)...")
+        log("🎬 Memulai Test Video Baseline ke $targetIp (Video: $videoPort, Ctrl: $ctrlPort)...")
         isStreamingActive = true
         currentMode = StreamMode.TEST_PATTERN
         isVideoStreamRunning = false
+        onStateChangedCallback?.invoke()
 
         initSockets(targetIp, videoPort, ctrlPort)
     }
@@ -188,15 +171,16 @@ class ScreenCastService : Service() {
         mediaProjection = mpManager.getMediaProjection(resultCode, data)
 
         if (mediaProjection == null) {
-            log("Gagal mendapatkan izin MediaProjection.")
+            log("✖ Gagal mendapatkan izin MediaProjection.")
             stopSelf()
             return
         }
 
-        log("Memulai streaming layar HP ke speedometer $targetIp:$videoPort...")
+        log("📱 Memulai Screen Mirroring (960x360 CBR) ke $targetIp:$videoPort...")
         isStreamingActive = true
         currentMode = StreamMode.SCREEN_MIRROR
         isVideoStreamRunning = false
+        onStateChangedCallback?.invoke()
 
         initSockets(targetIp, videoPort, ctrlPort)
     }
@@ -210,34 +194,31 @@ class ScreenCastService : Service() {
 
         controlChannelClient = ControlChannelClient(targetIp, ctrlPort) { log(it) }.apply {
             onShowRequested = {
-                log("★ Saluran kontrol siap / Speedometer meminta SHOW.")
+                log("★ Cluster siap menampilkan video (SHOW diterima).")
                 startVideoStream()
             }
             onHideRequested = {
-                log("Speedometer meminta HIDE, menjeda transmisi video.")
+                log("Cluster meminta HIDE, menjeda transmisi video.")
                 pauseVideoStream()
             }
             onKeyFrameRequested = {
-                hudEncoder?.requestKeyFrame()
                 mediaEncoder?.requestKeyFrame()
                 assetPlayer?.requestKeyFrame()
             }
             onClusterModeChanged = { modeStr ->
                 val isNight = modeStr.contains("night", ignoreCase = true)
-                currentHudRenderer?.state?.isNightMode = isNight
-                currentHudRenderer?.state?.clusterMode = if (isNight) "NIGHT" else "DAY"
-                log("🌓 Menyesuaikan Tema HUD Cockpit ke mode: ${if (isNight) "MALAM" else "SIANG"}")
+                aaReceiver?.sendNightMode(isNight)
+                log("🌓 Sensor cahaya motor mengubah tema ke: ${if (isNight) "MALAM" else "SIANG"}")
             }
         }
 
         serviceScope.launch {
-            // 1. Hubungkan saluran kontrol port 9527 terlebih dahulu
             controlChannelClient?.connect()
 
-            // 2. Beri jeda hingga 2 detik agar negosiasi keamanan ECDH (Msg 49) selesai
-            kotlinx.coroutines.delay(2000)
+            // Tunggu negosiasi ECDH (Msg 49) di Port 9527 maksimal 1.6 detik
+            delay(1600)
             if (isStreamingActive && !isVideoStreamRunning) {
-                log("Batas waktu handshake terlewati, memicu sinyal SHOW manual...")
+                log("Memicu sinyal SHOW & membuka aliran video Port 9528...")
                 controlChannelClient?.sendShowSignal()
                 startVideoStream()
             }
@@ -246,7 +227,6 @@ class ScreenCastService : Service() {
 
     private fun startVideoStream() {
         if (!isStreamingActive || isVideoStreamRunning) {
-            hudEncoder?.requestKeyFrame()
             mediaEncoder?.requestKeyFrame()
             assetPlayer?.requestKeyFrame()
             return
@@ -254,13 +234,29 @@ class ScreenCastService : Service() {
         isVideoStreamRunning = true
 
         serviceScope.launch {
-            // Buka soket video Port 9528 SETELAH handshake port 9527 divalidasi oleh motor
             socketStreamer?.connect()
 
             when (currentMode) {
                 StreamMode.ANDROID_AUTO -> {
-                    aaReceiver = com.umox.app.aa.AaHeadlessReceiver(
+                    // 1. Nyalakan Hardware H.264 Encoder (960x360 @ 30fps, 2.5 Mbps CBR) dengan GPU Surface Input
+                    val encoder = MediaEncoder(
+                        width = 960,
+                        height = 360,
+                        dpi = 160,
+                        bitrate = 2_500_000,
+                        fps = 30,
+                        onPacketEncoded = { packet, _ ->
+                            socketStreamer?.sendH264Packet(packet)
+                        },
+                        onLog = { log(it) }
+                    )
+                    val bridgeSurface = encoder.startSurfaceBridge()
+                    mediaEncoder = encoder
+
+                    // 2. Hubungkan Android Auto Receiver langsung ke GPU Surface milik MediaEncoder
+                    val receiver = AaHeadlessReceiver(
                         context = applicationContext,
+                        outputSurface = bridgeSurface,
                         onH264Frame = { bytes, offset, length ->
                             val nalu = ByteArray(length)
                             System.arraycopy(bytes, offset, nalu, 0, length)
@@ -272,30 +268,16 @@ class ScreenCastService : Service() {
                     ).apply {
                         start()
                     }
-                    log("★ ANDROID AUTO RECEIVER AKTIF! Zero-copy pass-through 60 FPS ke cluster.")
-                }
-                StreamMode.HUD_COCKPIT -> {
-                    val renderer = currentHudRenderer ?: HudDashboardRenderer(960, 360).also { currentHudRenderer = it }
-                    hudEncoder = HudStreamEncoder(
-                        width = 960,
-                        height = 360,
-                        fps = 30,
-                        bitrate = 2_000_000,
-                        onPacketEncoded = { packet ->
-                            socketStreamer?.sendH264Packet(packet)
-                        },
-                        onLog = { log(it) }
-                    ).apply {
-                        start(renderer)
-                    }
-                    log("★ HUD COCKPIT DIGITAL AKTIF! Menampilkan Speedometer & Navigasi ke cluster.")
+                    aaReceiver = receiver
+                    activeAaReceiver = receiver
+                    log("★ ANDROID AUTO HARDWARE BRIDGE AKTIF (960x360 @ 30 FPS Zero-Copy GPU)!")
                 }
                 StreamMode.SCREEN_MIRROR -> {
                     mediaEncoder = MediaEncoder(
                         width = 960,
                         height = 360,
                         dpi = 160,
-                        bitrate = 2_000_000,
+                        bitrate = 2_500_000,
                         fps = 30,
                         onPacketEncoded = { packet, _ ->
                             socketStreamer?.sendH264Packet(packet)
@@ -304,7 +286,7 @@ class ScreenCastService : Service() {
                     )
                     mediaProjection?.let { mp ->
                         mediaEncoder?.start(mp)
-                        log("★ STREAMING LAYAR HP AKTIF (960x360 Baseline). Buka Google Maps di HP.")
+                        log("★ SCREEN MIRRORING AKTIF (960x360 @ 30 FPS CBR).")
                     }
                     mediaEncoder?.requestKeyFrame()
                 }
@@ -320,7 +302,7 @@ class ScreenCastService : Service() {
                     ).apply {
                         start()
                     }
-                    log("★ TEST PATTERN VIDEO BASELINE AKTIF! Memutar test_baseline.h264.")
+                    log("★ TEST VIDEO BASELINE AKTIF (test_baseline.h264).")
                 }
                 StreamMode.IDLE -> {}
             }
@@ -331,8 +313,7 @@ class ScreenCastService : Service() {
         isVideoStreamRunning = false
         aaReceiver?.stop()
         aaReceiver = null
-        hudEncoder?.stop()
-        hudEncoder = null
+        activeAaReceiver = null
         mediaEncoder?.stop()
         mediaEncoder = null
         assetPlayer?.stop()
@@ -343,11 +324,10 @@ class ScreenCastService : Service() {
     private fun handleVideoReconnect(videoPort: Int) {
         if (!isStreamingActive || !isVideoStreamRunning) return
         serviceScope.launch {
-            log("Mencoba menyambungkan kembali soket video ($videoPort) dalam 1 detik...")
-            kotlinx.coroutines.delay(1000)
+            log("Menyambungkan ulang soket video ($videoPort) dalam 1 detik...")
+            delay(1000)
             if (isStreamingActive && isVideoStreamRunning) {
                 socketStreamer?.connect()
-                hudEncoder?.requestKeyFrame()
                 mediaEncoder?.requestKeyFrame()
                 assetPlayer?.requestKeyFrame()
             }
@@ -358,6 +338,7 @@ class ScreenCastService : Service() {
         isStreamingActive = false
         currentMode = StreamMode.IDLE
         pauseVideoStream()
+        onStateChangedCallback?.invoke()
 
         val sock = socketStreamer
         val ctrl = controlChannelClient
@@ -385,7 +366,7 @@ class ScreenCastService : Service() {
                 proj?.stop()
             } catch (_: Exception) {}
 
-            log("✔ Saluran streaming video & kontrol berhasil ditutup total.")
+            log("✔ Sesi streaming ditutup dengan bersih.")
         }.start()
 
         try {
@@ -406,10 +387,10 @@ class ScreenCastService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
-                "UMOX Screen Cast",
+                "UMOX Stream Service",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Layanan proyeksi layar & HUD ke speedometer"
+                description = "Layanan proyeksi Android Auto & Layar ke Speedometer Omoway"
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
@@ -424,7 +405,7 @@ class ScreenCastService : Service() {
         )
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("UMOX Desay SV Stream")
+            .setContentTitle("UMOX Auto Bridge")
             .setContentText(contentText)
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setContentIntent(pendingIntent)
