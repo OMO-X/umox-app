@@ -3,11 +3,9 @@ package com.umox.app.aa
 import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaFormat
-import android.os.Build
 import android.util.Log
 import android.view.Surface
 import com.umox.app.stream.H264NaluSanitizer
-import com.umox.app.stream.MediaEncoder
 import com.umox.app.stream.OmowayViewportConfig
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
@@ -22,13 +20,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Native Android Auto Headless Receiver & 1280x720 Widescreen Hardware Decoder.
  *
- * Mengadopsi protokol eksak dari `d0.java`, `l.java`, `g0.java`, `v.java`, dan `z.java` pada WayXAuto:
+ * Mengadopsi protokol 1:1 dari `d0.java`, `l.java`, `g0.java`, `v.java`, dan `z.java` pada WayXAuto:
  * 1. Menghubungkan ke Android Auto Head Unit Server (`127.0.0.1:5277`) dengan fallback port `5288`.
- * 2. Mengirim `ServiceDiscoveryResponse` dengan `MediaSinkService.video_configs` (Field 4!)
- *    pada resolusi `1280x720 @ 60 FPS` (`width_margin = 160, height_margin = 360` -> area aktif `1120x360` widescreen).
- * 3. Mengirim urutan pembuka video lengkap: `MEDIA_SETUP_RESPONSE (0x8003)` -> `MEDIA_START_INDICATION (0x8001)` -> `VIDEO_FOCUS_INDICATION (0x8008)`.
- * 4. Mendekode stream H.264 Android Auto ke `SurfaceTexture` milik `EglSurfaceCropper` (Zero-CPU-Copy).
- * 5. Mendukung Touch Input langsung pada Live Preview (`sendTouch`), Key Event (`sendKey`), dan Rotary (`sendRotary`).
+ * 2. Mengirim `ServiceDiscoveryResponse` lengkap 5 Channel (1=Sensor[13,10], 2=Video 1280x720@60fps margin 160x360,
+ *    3=Input+Touch 1120x360, 4=AudioSink, 5=MicSource) dan metadata field 2..11 yang presisi.
+ * 3. Menangani `0x8000 (MEDIA_SETUP_REQUEST)` dengan `0x8003 (v.e(12))` + `0x8008 (v.l(true))`,
+ *    serta `0x8001 (MEDIA_START_INDICATION)` dari ponsel dengan menyimpan `videoSessionId` dan membalas `0x8008 (v.l(false))`.
+ * 4. Mendekode stream H.264 Android Auto menggunakan dedicated output thread (`g0.java`) ke `SurfaceTexture` OpenGL (`EglSurfaceCropper`).
  */
 class AaHeadlessReceiver(
     private val context: Context,
@@ -41,11 +39,13 @@ class AaHeadlessReceiver(
         const val AA_PORT_LOCAL = 5277
         const val AA_PORT_INCOMING = 5288
 
-        // Channel IDs (persis d0.java: 0=Control, 1=Sensor, 2=Video, 3=Input)
+        // Channel IDs (persis d0.java: 0=Control, 1=Sensor, 2=Video, 3=Input, 4=Audio, 5=Mic)
         const val CH_CONTROL = 0
         const val CH_SENSOR = 1
         const val CH_VIDEO = 2
         const val CH_INPUT = 3
+        const val CH_AUDIO = 4
+        const val CH_MIC = 5
 
         // Frame Flags
         const val FLAG_FIRST = 0x01
@@ -54,9 +54,11 @@ class AaHeadlessReceiver(
         const val FLAG_CONTROL = 0x04
         const val FLAG_ENCRYPTED = 0x08
 
-        // Android KeyCodes untuk Remote Control & Rotary
+        // Android KeyCodes untuk Remote Control & Rotary (`v.f` di WayXAuto)
         const val KEYCODE_HOME = 3
         const val KEYCODE_BACK = 4
+        const val KEYCODE_CALL = 5
+        const val KEYCODE_ENDCALL = 6
         const val KEYCODE_DPAD_UP = 19
         const val KEYCODE_DPAD_DOWN = 20
         const val KEYCODE_DPAD_LEFT = 21
@@ -94,10 +96,13 @@ class AaHeadlessReceiver(
         private set
 
     private var videoSessionId = 0
+    private var audioSessionId = 0
+    private var decodedFrameCount = 0L
+
     private var hwDecoder: MediaCodec? = null
-    private var decoderConfigured = false
-    private var cachedSps = ByteArray(0)
-    private var cachedPps = ByteArray(0)
+    private var decoderOutputThread: Thread? = null
+    @Volatile
+    private var decoderActive = false
     private val decoderLock = Any()
 
     private val fallbackSanitizer = H264NaluSanitizer { cleanPacket, _ ->
@@ -114,9 +119,8 @@ class AaHeadlessReceiver(
 
     fun stop() {
         isRunning.set(false)
-        // Kirim BYEBYE_REQUEST jika sesi masih hidup (`a0.java` line 90)
         try {
-            if (isVideoStreaming) {
+            if (activeSocket != null) {
                 val bye = AaProto.encode { writeVarint(1, 1) }
                 sendEncryptedMessage(CH_CONTROL, false, 0x000F, bye)
             }
@@ -134,134 +138,133 @@ class AaHeadlessReceiver(
     }
 
     /**
-     * Menginisialisasi / mengonfigurasi ulang Hardware AVC Decoder (`g0.java` di WayXAuto).
+     * Menginisialisasi Hardware AVC Decoder + Dedicated Output Thread persis `d0.java` lines 176-193 & `g0.java`.
      */
-    private fun ensureHwDecoderConfigured(sps: ByteArray, pps: ByteArray): MediaCodec? {
+    private fun ensureHwDecoderStarted(): MediaCodec? {
         val surface = outputSurface ?: return null
         synchronized(decoderLock) {
-            if (hwDecoder != null && decoderConfigured) {
+            if (hwDecoder != null && decoderActive) {
                 return hwDecoder
             }
             releaseHwDecoder()
+            if (!surface.isValid) {
+                Log.w(TAG, "Output surface belum valid untuk HW Decoder")
+                return null
+            }
             return try {
                 val width = OmowayViewportConfig.aaSourceWidth
                 val height = OmowayViewportConfig.aaSourceHeight
                 val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
-                    if (sps.isNotEmpty()) {
-                        setByteBuffer("csd-0", ByteBuffer.wrap(sps))
-                    }
-                    if (pps.isNotEmpty()) {
-                        setByteBuffer("csd-1", ByteBuffer.wrap(pps))
-                    }
-                    setInteger(MediaFormat.KEY_PRIORITY, 0)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-                    }
+                    setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 2_097_152)
                 }
                 val decoder = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
                 decoder.configure(format, surface, null, 0)
+                decoder.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT)
                 decoder.start()
                 hwDecoder = decoder
-                decoderConfigured = true
-                Log.i(TAG, "✔ Hardware AVC Decoder (${width}x${height}) -> GL SurfaceTexture siap!")
+                decoderActive = true
+
+                decoderOutputThread = Thread({
+                    runDecoderOutputLoop(decoder)
+                }, "UMOX-AaVideoOutput").apply {
+                    priority = Thread.MAX_PRIORITY
+                    start()
+                }
+                Log.i(TAG, "✔ Hardware AVC Decoder (${width}x${height}) + Output Thread siap!")
                 decoder
             } catch (e: Exception) {
-                Log.w(TAG, "Gagal konfigurasi HW Decoder: ${e.message}")
+                Log.e(TAG, "Gagal konfigurasi HW Decoder: ${e.message}", e)
                 hwDecoder = null
-                decoderConfigured = false
+                decoderActive = false
                 null
             }
         }
     }
 
-    /**
-     * Mendekode paket H.264 dari Android Auto ke `SurfaceTexture` (`g0.a` & `g0.b` di WayXAuto).
-     */
-    private fun feedToHwDecoder(data: ByteArray, offset: Int, length: Int, isConfig: Boolean, ptsUs: Long) {
-        val slice = data.copyOfRange(offset, offset + length)
-        val normalized = MediaEncoder.normalizeAnnexBNalus(slice)
-        if (normalized.isEmpty()) return
-
-        val sps = MediaEncoder.extractNaluByType(7, normalized)
-        val pps = MediaEncoder.extractNaluByType(8, normalized)
-        val spsChanged = sps.isNotEmpty() && !sps.contentEquals(cachedSps)
-        val ppsChanged = pps.isNotEmpty() && !pps.contentEquals(cachedPps)
-        if (sps.isNotEmpty()) cachedSps = sps
-        if (pps.isNotEmpty()) cachedPps = pps
-
-        if (spsChanged || ppsChanged) {
-            synchronized(decoderLock) {
-                decoderConfigured = false
-            }
-        }
-
-        val decoder = ensureHwDecoderConfigured(cachedSps, cachedPps)
-        if (decoder == null) {
-            if (!isConfig) {
-                fallbackSanitizer.processAnnexB(normalized, 0, normalized.size)
-            }
-            return
-        }
-
-        synchronized(decoderLock) {
+    private fun runDecoderOutputLoop(decoder: MediaCodec) {
+        val info = MediaCodec.BufferInfo()
+        while (decoderActive && isRunning.get()) {
             try {
-                val info = MediaCodec.BufferInfo()
-                drainDecoderOutputs(decoder, info)
-
-                var inIdx = decoder.dequeueInputBuffer(10_000L)
-                if (inIdx < 0) {
-                    drainDecoderOutputs(decoder, info)
-                    inIdx = decoder.dequeueInputBuffer(10_000L)
-                }
-
-                if (inIdx >= 0) {
-                    val inBuf = decoder.getInputBuffer(inIdx)
-                    if (inBuf != null && inBuf.capacity() >= normalized.size) {
-                        inBuf.clear()
-                        inBuf.put(normalized)
-                        val flags = if (isConfig) MediaCodec.BUFFER_FLAG_CODEC_CONFIG else 0
-                        val safePts = if (ptsUs > 0L) ptsUs else (System.nanoTime() / 1000L)
-                        decoder.queueInputBuffer(inIdx, 0, normalized.size, safePts, flags)
-                    } else {
-                        decoder.queueInputBuffer(inIdx, 0, 0, 0L, 0)
+                val outIdx = decoder.dequeueOutputBuffer(info, 10_000L)
+                if (outIdx >= 0) {
+                    val render = info.size > 0 && (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
+                    decoder.releaseOutputBuffer(outIdx, render)
+                    if (render) {
+                        decodedFrameCount++
+                        if (decodedFrameCount == 1L) {
+                            onStatusChanged("★ Frame video pertama Android Auto berhasil didekode ke Live Preview!")
+                        }
                     }
+                } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    val fmt = decoder.outputFormat
+                    Log.i(TAG, "Output format Decoder AA: $fmt")
                 }
-
-                drainDecoderOutputs(decoder, info)
             } catch (e: Exception) {
-                Log.w(TAG, "HW Decoder reset karena error: ${e.message}")
-                releaseHwDecoder()
-            }
-        }
-    }
-
-    private fun drainDecoderOutputs(decoder: MediaCodec, info: MediaCodec.BufferInfo) {
-        while (true) {
-            val outIdx = decoder.dequeueOutputBuffer(info, 0L)
-            if (outIdx >= 0) {
-                val shouldRender = info.size > 0 && (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
-                decoder.releaseOutputBuffer(outIdx, shouldRender)
-            } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                val fmt = decoder.outputFormat
-                val decW = fmt.getInteger(MediaFormat.KEY_WIDTH)
-                val decH = fmt.getInteger(MediaFormat.KEY_HEIGHT)
-                Log.i(TAG, "Format output Decoder AA: ${decW}x${decH}")
-            } else {
+                if (decoderActive) {
+                    Log.w(TAG, "Decoder output loop berhenti: ${e.message}")
+                }
                 break
             }
         }
     }
 
+    /**
+     * Memasukkan buffer H.264 ke input `MediaCodec` persis `g0.a(byte[], int, int, long, int)` di WayXAuto.
+     */
+    private fun queueToHwDecoder(data: ByteArray, offset: Int, length: Int, ptsUs: Long, codecFlags: Int) {
+        val decoder = ensureHwDecoderStarted()
+        if (decoder == null) {
+            if (codecFlags == 0) {
+                fallbackSanitizer.processAnnexB(data, offset, length)
+            }
+            return
+        }
+
+        for (attempt in 0 until 5) {
+            if (!decoderActive) return
+            try {
+                val inIdx = decoder.dequeueInputBuffer(100_000L)
+                if (inIdx >= 0) {
+                    val inBuf = decoder.getInputBuffer(inIdx)
+                    if (inBuf != null) {
+                        inBuf.clear()
+                        inBuf.put(data, offset, length)
+                        decoder.queueInputBuffer(inIdx, 0, length, ptsUs, codecFlags)
+                    } else {
+                        decoder.queueInputBuffer(inIdx, 0, 0, 0L, 0)
+                    }
+                    return
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Gagal queue video data ke HW Decoder: ${e.message}", e)
+                return
+            }
+        }
+        Log.w(TAG, "Input buffer HW Decoder penuh; melewati $length bytes")
+    }
+
     private fun releaseHwDecoder() {
+        decoderActive = false
+        val outThread = decoderOutputThread
+        decoderOutputThread = null
+        if (outThread != null && outThread !== Thread.currentThread()) {
+            try {
+                outThread.join(400L)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
         synchronized(decoderLock) {
-            decoderConfigured = false
-            try {
-                hwDecoder?.stop()
-            } catch (_: Exception) {}
-            try {
-                hwDecoder?.release()
-            } catch (_: Exception) {}
+            val dec = hwDecoder
             hwDecoder = null
+            if (dec != null) {
+                try {
+                    dec.stop()
+                } catch (_: Exception) {}
+                try {
+                    dec.release()
+                } catch (_: Exception) {}
+            }
         }
     }
 
@@ -274,7 +277,7 @@ class AaHeadlessReceiver(
                 socket = Socket()
                 socket.tcpNoDelay = true
                 socket.soTimeout = 5000
-                socket.connect(InetSocketAddress("127.0.0.1", AA_PORT_LOCAL), 2500)
+                socket.connect(InetSocketAddress("127.0.0.1", AA_PORT_LOCAL), 2000)
                 onStatusChanged("✔ Terhubung ke Server Lokal Android Auto (5277)")
             } catch (_: Exception) {
                 try {
@@ -289,7 +292,7 @@ class AaHeadlessReceiver(
                             bind(InetSocketAddress("0.0.0.0", AA_PORT_INCOMING))
                         }
                     }
-                    serverSocket?.soTimeout = 2000
+                    serverSocket?.soTimeout = 1500
                     onStatusChanged("Menunggu Server Unit Kepala Android Auto (127.0.0.1:5277)...")
                     socket = serverSocket?.accept()
                     socket?.tcpNoDelay = true
@@ -304,7 +307,7 @@ class AaHeadlessReceiver(
                 } catch (e: Exception) {
                     if (isRunning.get()) {
                         Log.w(TAG, "Sesi AA berakhir: ${e.message}")
-                        onStatusChanged("Menyambungkan ulang ke Android Auto...")
+                        onStatusChanged("Sesi AA terputus (${e.message}). Menyambungkan ulang...")
                     }
                 } finally {
                     isInputChannelOpen = false
@@ -335,14 +338,14 @@ class AaHeadlessReceiver(
         val out = socket.getOutputStream()
         rawOut = out
         rxBuffers.clear()
+        decodedFrameCount = 0L
+        videoSessionId = 0
+        audioSessionId = 0
 
-        // 1. Kirim Version Request (Major 1, Minor 1 - persis WayXAuto l.java line 113)
+        // 1. Kirim Version Request (Major 1, Minor 1 - persis WayXAuto l.java)
         onStatusChanged("Handshake protokol AAP v1.1...")
         val verReq = byteArrayOf(0x00, 0x01, 0x00, 0x01, 0x00, 0x01)
         sendRawFrame(out, CH_CONTROL, FLAG_BULK, verReq)
-
-        // Disable read timeout setelah handshake awal berjalan
-        socket.soTimeout = 0
 
         // 2. Main Read Loop (`l.java` + `h0.java` di WayXAuto)
         val header = ByteArray(4)
@@ -371,7 +374,7 @@ class AaHeadlessReceiver(
 
             val completeMsg = reassembleFrame(ch, flags, decrypted)
             if (completeMsg != null) {
-                handleCompleteMessage(ch, flags, completeMsg)
+                handleCompleteMessage(ch, completeMsg)
             }
         }
     }
@@ -394,27 +397,31 @@ class AaHeadlessReceiver(
         return stream.toByteArray()
     }
 
-    private fun handleCompleteMessage(ch: Int, flags: Int, msg: ByteArray) {
+    private fun handleCompleteMessage(ch: Int, msg: ByteArray) {
         if (msg.size < 2) return
         val msgType = ((msg[0].toInt() and 0xFF) shl 8) or (msg[1].toInt() and 0xFF)
         val bodyOffset = 2
         val bodyLen = msg.size - 2
 
-        if (ch == CH_CONTROL) {
-            handleControlMessage(msgType, msg, bodyOffset, bodyLen)
+        // Persis d0.java lines 94-98: Setiap CHANNEL_OPEN_REQUEST (msgType == 7) di channel != 0 langsung dibalas!
+        if (msgType == 0x0007 && ch != CH_CONTROL) {
+            val openResp = AaProto.encode { writeVarint(1, 0) }
+            sendEncryptedMessage(ch, true, 0x0008, openResp)
+            if (ch == CH_VIDEO) {
+                onStatusChanged("Saluran Video AA terbuka, menyiapkan dekoder...")
+            } else if (ch == CH_INPUT) {
+                isInputChannelOpen = true
+            }
             return
         }
 
         when (ch) {
+            CH_CONTROL -> handleControlMessage(msgType, msg, bodyOffset, bodyLen)
             CH_SENSOR -> handleSensorChannel(msgType, msg, bodyOffset, bodyLen)
             CH_VIDEO -> handleVideoChannel(msgType, msg, bodyOffset, bodyLen)
             CH_INPUT -> handleInputChannel(msgType)
-            else -> {
-                if ((flags and FLAG_CONTROL) != 0 && msgType == 0x0007) {
-                    val resp = AaProto.encode { writeVarint(1, 0) }
-                    sendEncryptedMessage(ch, true, 0x0008, resp)
-                }
-            }
+            CH_AUDIO -> handleAudioChannel(msgType, msg, bodyOffset, bodyLen)
+            CH_MIC -> handleMicChannel(msgType)
         }
     }
 
@@ -423,11 +430,11 @@ class AaHeadlessReceiver(
         val out = rawOut ?: return
 
         when (msgType) {
-            0x0002 -> { // VERSION_RESPONSE (`d0.java` line 253)
+            0x0002 -> { // VERSION_RESPONSE (`d0.java` lines 404-433)
                 if (len >= 6) {
                     val status = ((msg[offset + 4].toInt() and 0xFF) shl 8) or (msg[offset + 5].toInt() and 0xFF)
-                    if (status == 0xFFFF) {
-                        throw IllegalStateException("Versi protokol Android Auto tidak kompatibel")
+                    if (status != 0) {
+                        throw IllegalStateException("Versi protokol Android Auto ditolak ($status)")
                     }
                 }
                 onStatusChanged("Memulai negosiasi TLS Android Auto...")
@@ -438,7 +445,7 @@ class AaHeadlessReceiver(
                     .array()
                 sendRawFrame(out, CH_CONTROL, FLAG_BULK, frame)
             }
-            0x0003 -> { // SSL_HANDSHAKE (`d0.java` line 268)
+            0x0003 -> { // SSL_HANDSHAKE (`d0.java` lines 383-401)
                 val slice = msg.copyOfRange(offset, offset + len)
                 val reply = tls.processHandshake(slice)
                 if (reply.isNotEmpty()) {
@@ -449,6 +456,7 @@ class AaHeadlessReceiver(
                     sendRawFrame(out, CH_CONTROL, FLAG_BULK, frame)
                 }
                 if (tls.isHandshakeFinished) {
+                    activeSocket?.soTimeout = 0
                     onStatusChanged("✔ Enkripsi TLS Android Auto Aktif!")
                     val authComplete = AaProto.encode { writeVarint(1, 0) }
                     val frame = ByteBuffer.allocate(2 + authComplete.size)
@@ -458,32 +466,36 @@ class AaHeadlessReceiver(
                     sendRawFrame(out, CH_CONTROL, FLAG_BULK, frame)
                 }
             }
-            0x0005 -> { // SERVICE_DISCOVERY_REQUEST (`d0.java` line 284)
+            0x0005 -> { // SERVICE_DISCOVERY_REQUEST (`d0.java` lines 279-381)
                 onStatusChanged("Mengirim profil layar widescreen 1280×720 (Active 1120×360) ke Android Auto...")
                 val sdr = buildServiceDiscoveryResponse()
                 sendEncryptedMessage(CH_CONTROL, false, 0x0006, sdr)
             }
-            0x000B -> { // PING_REQUEST (`d0.java` line 289)
+            0x000B -> { // PING_REQUEST (`d0.java` lines 238-243)
+                val fields = AaProto.parseFields(msg, offset, len)
+                val ts = fields[1]?.firstOrNull() as? Long ?: 0L
                 val pingResp = AaProto.encode {
-                    writeVarint(1, 1)
-                    writeVarint(2, 0)
+                    writeVarint(1, ts)
                 }
                 sendEncryptedMessage(CH_CONTROL, false, 0x000C, pingResp)
             }
-            0x000D -> { // NAVIGATION_FOCUS_REQUEST (`d0.java` line 292 -> field 1 = 2!)
+            0x000D -> { // NAVIGATION_FOCUS_REQUEST (`d0.java` lines 246-250)
                 val navResp = AaProto.encode { writeVarint(1, 2) }
                 sendEncryptedMessage(CH_CONTROL, false, 0x000E, navResp)
             }
-            0x000F -> { // BYEBYE_REQUEST (`d0.java` line 297)
-                val byeResp = AaProto.encode { writeVarint(1, 0) }
-                sendEncryptedMessage(CH_CONTROL, false, 0x0010, byeResp)
+            0x000F -> { // BYEBYE_REQUEST (`d0.java` lines 253-258)
+                sendEncryptedMessage(CH_CONTROL, false, 0x0010, ByteArray(0))
+                activeSocket?.close()
             }
-            0x0012 -> { // AUDIO_FOCUS_REQUEST (`d0.java` line 242 & `v.e`)
+            0x0010 -> { // BYEBYE_RESPONSE (`d0.java` lines 259-261)
+                activeSocket?.close()
+            }
+            0x0012 -> { // AUDIO_FOCUS_REQUEST (`d0.java` lines 264-272)
                 val reqFields = AaProto.parseFields(msg, offset, len)
-                val reqType = reqFields[1]?.firstOrNull() as? Long ?: 1L
-                val state = if (reqType == 4L) 7L else 1L
+                val reqType = (reqFields[1]?.firstOrNull() as? Long ?: 1L).toInt()
+                val focusState = if (reqType == 4) 3 else 1
                 val afResp = AaProto.encode {
-                    writeVarint(1, state)
+                    writeVarint(1, focusState)
                     writeVarint(2, 0)
                 }
                 sendEncryptedMessage(CH_CONTROL, false, 0x0013, afResp)
@@ -491,71 +503,81 @@ class AaHeadlessReceiver(
         }
     }
 
+    /**
+     * Persis `d0.java` lines 213-232:
+     * Mendukung sensor 13 (NIGHT_MODE) dan sensor 10 (DRIVING_STATUS).
+     */
     private fun handleSensorChannel(msgType: Int, msg: ByteArray, offset: Int, len: Int) {
-        when (msgType) {
-            0x0007 -> { // CHANNEL_OPEN_REQUEST (`d0.java` line 209)
-                val resp = AaProto.encode { writeVarint(1, 0) }
-                sendEncryptedMessage(CH_SENSOR, true, 0x0008, resp)
-            }
-            0x8001 -> { // SENSOR_START_REQUEST (`d0.java` line 213)
-                val startResp = AaProto.encode { writeVarint(1, 0) }
-                sendEncryptedMessage(CH_SENSOR, false, 0x8002, startResp)
+        if (msgType == 0x8001) { // SENSOR_START_REQUEST
+            val fields = AaProto.parseFields(msg, offset, len)
+            val sensorType = (fields[1]?.firstOrNull() as? Long ?: -1L).toInt()
+            val startResp = AaProto.encode { writeVarint(1, 0) }
+            sendEncryptedMessage(CH_SENSOR, false, 0x8002, startResp)
 
-                // Kirim DrivingStatus = UNRESTRICTED (0) (`d0.java` lines 217-223)
-                val drivingEvent = AaProto.encode {
-                    writeMessage(1) {
+            if (sensorType == 13) {
+                val event13 = AaProto.encode {
+                    writeMessage(13) {
                         writeVarint(1, 0)
                     }
                 }
-                sendEncryptedMessage(CH_SENSOR, false, 0x8003, drivingEvent)
+                sendEncryptedMessage(CH_SENSOR, false, 0x8003, event13)
+            } else if (sensorType == 10) {
+                val event10 = AaProto.encode {
+                    writeMessage(10) {
+                        writeVarint(1, if (isNightModeActive) 1 else 0)
+                    }
+                }
+                sendEncryptedMessage(CH_SENSOR, false, 0x8003, event10)
             }
         }
     }
 
+    /**
+     * Persis `d0.java` lines 150-211:
+     * - `0x8000 (32768)`: Balas `0x8003 (v.e(12))` + `0x8008 (v.l(true))` (`unsolicited = 1`).
+     * - `0x8001 (32769)`: Simpan `videoSessionId` dari request, balas `0x8008 (v.l(false))`.
+     * - `0x8007 (32775)`: Balas `0x8008 (v.l(false))`.
+     * - `0x0001`: `MEDIA_CODEC_CONFIG` (`flags = 2`) -> start decoder & ack.
+     * - `0x0000`: `MEDIA_WITH_TIMESTAMP` (8-byte timestamp BE) -> decode & ack.
+     */
     private fun handleVideoChannel(msgType: Int, msg: ByteArray, offset: Int, len: Int) {
         when (msgType) {
-            0x0007 -> { // CHANNEL_OPEN_REQUEST (`d0.java` line 182)
-                val resp = AaProto.encode { writeVarint(1, 0) }
-                sendEncryptedMessage(CH_VIDEO, true, 0x0008, resp)
-                onStatusChanged("Saluran Video AA terbuka, mengaktifkan proyeksi...")
-            }
-            0x8000 -> { // MEDIA_SETUP_REQUEST (`d0.java` lines 186-198)
-                // 1. Balas MEDIA_SETUP_RESPONSE (0x8003): status=2(OK), max_unacked=1, config_index=0
+            0x8000 -> { // MEDIA_SETUP_REQUEST (32768)
                 val setupResp = AaProto.encode {
                     writeVarint(1, 2)
-                    writeVarint(2, 1)
+                    writeVarint(2, 12)
                     writeVarint(3, 0)
                 }
                 sendEncryptedMessage(CH_VIDEO, false, 0x8003, setupResp)
-
-                // 2. WAJIB: Kirim MEDIA_START_INDICATION (0x8001): session=0, config=0 (`d0.java` line 195)
-                videoSessionId = 0
-                val startInd = AaProto.encode {
-                    writeVarint(1, videoSessionId)
-                    writeVarint(2, 0)
-                }
-                sendEncryptedMessage(CH_VIDEO, false, 0x8001, startInd)
-
-                // 3. Kirim VIDEO_FOCUS_INDICATION (0x8008): mode=1(PROJECTED), unsolicited=0 (`d0.java` line 198)
-                sendVideoFocusIndication(1)
-                isVideoStreaming = true
-                onStatusChanged("★ Streaming Android Auto Aktif (960×360 @ 60 FPS Zero-Copy)!")
+                sendVideoFocusIndication(projected = true, unsolicited = true)
+                onStatusChanged("★ Setup Video AA diterima, meminta fokus proyeksi...")
             }
-            0x8007 -> { // VIDEO_FOCUS_REQUEST (`d0.java` line 199)
+            0x8001 -> { // MEDIA_START_INDICATION (32769) dari ponsel!
                 val fields = AaProto.parseFields(msg, offset, len)
-                val focusMode = (fields[2]?.firstOrNull() as? Long ?: 1L).toInt()
-                sendVideoFocusIndication(focusMode)
+                videoSessionId = (fields[1]?.firstOrNull() as? Long ?: 0L).toInt()
+                isVideoStreaming = true
+                sendVideoFocusIndication(projected = true, unsolicited = false)
+                onStatusChanged("★ Streaming Android Auto Aktif (Sesi $videoSessionId • 960×360 @ 60 FPS)!")
             }
-            0x0000 -> { // MEDIA_WITH_TIMESTAMP (`d0.java` line 137)
-                if (len > 8) {
-                    val ptsUs = ByteBuffer.wrap(msg, offset, 8).long
-                    feedToHwDecoder(msg, offset + 8, len - 8, false, ptsUs)
-                    sendMediaAck(CH_VIDEO, videoSessionId, 1)
-                }
+            0x8002 -> { // MEDIA_STOP_INDICATION (32770)
+                onStatusChanged("Video dihentikan sementara oleh Android Auto")
             }
-            0x0001 -> { // MEDIA_DATA / CODEC_CONFIG (`d0.java` line 158)
+            0x8007 -> { // VIDEO_FOCUS_REQUEST (32775)
+                sendVideoFocusIndication(projected = true, unsolicited = false)
+            }
+            0x0001 -> { // MEDIA_CODEC_CONFIG (SPS/PPS)
                 if (len > 0) {
-                    feedToHwDecoder(msg, offset, len, true, 0L)
+                    queueToHwDecoder(msg, offset, len, 0L, MediaCodec.BUFFER_FLAG_CODEC_CONFIG)
+                }
+                sendMediaAck(CH_VIDEO, videoSessionId, 1)
+            }
+            0x0000 -> { // MEDIA_WITH_TIMESTAMP (8-byte timestamp + H.264 slice)
+                if (len > 8) {
+                    var ptsUs = 0L
+                    for (i in 0 until 8) {
+                        ptsUs = (ptsUs shl 8) or (msg[offset + i].toLong() and 0xFFL)
+                    }
+                    queueToHwDecoder(msg, offset + 8, len - 8, ptsUs, 0)
                 }
                 sendMediaAck(CH_VIDEO, videoSessionId, 1)
             }
@@ -563,23 +585,67 @@ class AaHeadlessReceiver(
     }
 
     private fun handleInputChannel(msgType: Int) {
+        if (msgType == 0x8002) { // KEY_BINDING_REQUEST (32770)
+            val resp = AaProto.encode { writeVarint(1, 0) }
+            sendEncryptedMessage(CH_INPUT, false, 0x8003, resp)
+            isInputChannelOpen = true
+        }
+    }
+
+    /**
+     * Persis `d0.java` lines 123-140: Saluran Audio Sink (Channel 4).
+     */
+    private fun handleAudioChannel(msgType: Int, msg: ByteArray, offset: Int, len: Int) {
         when (msgType) {
-            0x0007 -> { // CHANNEL_OPEN_REQUEST (`d0.java` line 116)
-                val resp = AaProto.encode { writeVarint(1, 0) }
-                sendEncryptedMessage(CH_INPUT, true, 0x0008, resp)
-                isInputChannelOpen = true
+            0x8000 -> { // MEDIA_SETUP_REQUEST (32768)
+                val resp = AaProto.encode {
+                    writeVarint(1, 2)
+                    writeVarint(2, 16)
+                    writeVarint(3, 0)
+                }
+                sendEncryptedMessage(CH_AUDIO, false, 0x8003, resp)
             }
-            0x8002 -> { // KEY_BINDING_REQUEST (`d0.java` line 123)
-                val resp = AaProto.encode { writeVarint(1, 0) }
-                sendEncryptedMessage(CH_INPUT, false, 0x8003, resp)
+            0x8001 -> { // MEDIA_START_INDICATION (32769)
+                val fields = AaProto.parseFields(msg, offset, len)
+                audioSessionId = (fields[1]?.firstOrNull() as? Long ?: 0L).toInt()
+            }
+            0x0000, 0x0001 -> {
+                sendMediaAck(CH_AUDIO, audioSessionId, 1)
             }
         }
     }
 
-    private fun sendVideoFocusIndication(mode: Int) {
+    /**
+     * Persis `d0.java` lines 109-121: Saluran Microphone Source (Channel 5).
+     */
+    private fun handleMicChannel(msgType: Int) {
+        when (msgType) {
+            0x8000 -> { // MEDIA_SETUP_REQUEST (32768)
+                val resp = AaProto.encode {
+                    writeVarint(1, 2)
+                    writeVarint(2, 1)
+                    writeVarint(3, 0)
+                }
+                sendEncryptedMessage(CH_MIC, false, 0x8003, resp)
+            }
+            0x8005 -> { // MICROPHONE_REQUEST (32773)
+                val resp = AaProto.encode {
+                    writeVarint(1, 0)
+                    writeVarint(2, 0)
+                }
+                sendEncryptedMessage(CH_MIC, false, 0x8006, resp)
+            }
+        }
+    }
+
+    /**
+     * Persis `v.l(boolean unsolicited)` di WayXAuto (`v.java` lines 364-373):
+     * Field 1 = 1 (VIDEO_FOCUS_PROJECTED), Field 2 = 1 jika unsolicited, 0 jika respons.
+     */
+    private fun sendVideoFocusIndication(projected: Boolean, unsolicited: Boolean) {
         val vf = AaProto.encode {
-            writeVarint(1, mode)
-            writeVarint(2, 0)
+            writeVarint(1, if (projected) 1 else 2)
+            writeVarint(2, if (unsolicited) 1 else 0)
         }
         sendEncryptedMessage(CH_VIDEO, false, 0x8008, vf)
     }
@@ -592,9 +658,6 @@ class AaHeadlessReceiver(
         sendEncryptedMessage(ch, false, 0x8004, ack)
     }
 
-    /**
-     * Mengirim KeyEvent ke Android Auto (`z.java` & `v.d` di WayXAuto: Field 4 dari InputReport adalah `key_event`!).
-     */
     fun sendKey(keyCode: Int) {
         if (!isRunning.get() || activeSocket == null) return
         inputExecutor.execute {
@@ -606,9 +669,6 @@ class AaHeadlessReceiver(
         }
     }
 
-    /**
-     * Mengirim putaran Rotary Controller (`z.java` & `v.h` di WayXAuto: Field 6 dari InputReport adalah `relative_event`).
-     */
     fun sendRotary(delta: Int) {
         if (!isRunning.get() || activeSocket == null) return
         inputExecutor.execute {
@@ -616,7 +676,7 @@ class AaHeadlessReceiver(
                 val nowNs = System.nanoTime()
                 val report = AaProto.encode {
                     writeVarint(1, nowNs)
-                    writeMessage(6) { // relative_event
+                    writeMessage(6) {
                         writeMessage(1) {
                             writeVarint(1, KEYCODE_ROTARY)
                             writeVarint(2, delta)
@@ -628,12 +688,6 @@ class AaHeadlessReceiver(
         }
     }
 
-    /**
-     * Mengirim Touch Event langsung dari sentuhan jari pada Live Preview (`Field 3 = touch_event`).
-     * @param normX posisi X relatif (0.0 .. 1.0)
-     * @param normY posisi Y relatif (0.0 .. 1.0)
-     * @param action 0 = ACTION_DOWN, 1 = ACTION_UP, 2 = ACTION_MOVE
-     */
     fun sendTouch(normX: Float, normY: Float, action: Int) {
         if (!isRunning.get() || activeSocket == null) return
         val x = (normX.coerceIn(0f, 1f) * OmowayViewportConfig.aaActiveWidth).toInt()
@@ -643,11 +697,11 @@ class AaHeadlessReceiver(
                 val nowNs = System.nanoTime()
                 val report = AaProto.encode {
                     writeVarint(1, nowNs)
-                    writeMessage(3) { // touch_event
-                        writeMessage(1) { // pointer_data
+                    writeMessage(3) {
+                        writeMessage(1) {
                             writeVarint(1, x)
                             writeVarint(2, y)
-                            writeVarint(3, 0) // pointer_id = 0
+                            writeVarint(3, 0)
                         }
                         writeVarint(3, action)
                     }
@@ -664,7 +718,7 @@ class AaHeadlessReceiver(
             try {
                 val nightEvent = AaProto.encode {
                     writeMessage(10) {
-                        writeBool(1, isNight)
+                        writeVarint(1, if (isNight) 1 else 0)
                     }
                 }
                 sendEncryptedMessage(CH_SENSOR, false, 0x8003, nightEvent)
@@ -675,7 +729,7 @@ class AaHeadlessReceiver(
     private fun buildKeyReport(timestampNs: Long, keyCode: Int, isDown: Boolean): ByteArray {
         return AaProto.encode {
             writeVarint(1, timestampNs)
-            writeMessage(4) { // Field 4 = key_event (`v.d` di WayXAuto)
+            writeMessage(4) {
                 writeMessage(1) {
                     writeVarint(1, keyCode)
                     writeVarint(2, if (isDown) 1 else 0)
@@ -687,15 +741,17 @@ class AaHeadlessReceiver(
     }
 
     /**
-     * Membangun `ServiceDiscoveryResponse` persis seperti `d0.java` lines 314-380 di WayXAuto:
-     * - Channel 1 (Sensor): DRIVING_STATUS (1)
-     * - Channel 2 (MediaSink): available_type=3 (H264_BP), field 4 (video_configs) = 1280x720 @ 60fps
-     *   dengan width_margin=160 & height_margin=360 (menghasilkan area aktif widescreen 1120x360!), field 5=1
-     * - Channel 3 (InputSource): Keycodes + Touchscreen 1120x360 Capacitive
+     * Membangun `ServiceDiscoveryResponse` 100% identik dengan `d0.java` lines 307-380 di WayXAuto:
+     * - Channel 1: SensorSourceService (13 = DRIVING_STATUS, 10 = NIGHT_MODE)
+     * - Channel 2: MediaSinkService (Video H264_BP, Field 4 = 1280x720@60fps margin 160x360)
+     * - Channel 3: InputSourceService (Keycodes + Capacitive Touchscreen 1120x360)
+     * - Channel 4: MediaSinkService (Audio 16kHz 16-bit Mono)
+     * - Channel 5: MediaSourceService (Mic 16kHz 16-bit Mono)
+     * - Fields 2..11: Head Unit Metadata
      */
     private fun buildServiceDiscoveryResponse(): ByteArray {
         val supportedKeys = intArrayOf(
-            KEYCODE_HOME, KEYCODE_BACK,
+            KEYCODE_HOME, KEYCODE_BACK, KEYCODE_CALL, KEYCODE_ENDCALL,
             KEYCODE_DPAD_UP, KEYCODE_DPAD_DOWN, KEYCODE_DPAD_LEFT, KEYCODE_DPAD_RIGHT, KEYCODE_DPAD_CENTER,
             KEYCODE_MEDIA_PLAY_PAUSE, KEYCODE_MEDIA_NEXT, KEYCODE_MEDIA_PREVIOUS,
             KEYCODE_MUSIC, KEYCODE_NAVIGATION,
@@ -703,56 +759,88 @@ class AaHeadlessReceiver(
         )
 
         return AaProto.encode {
-            // 1. Channel 1: SensorSourceService (`caVar12` di d0.java)
+            // Channel 1: SensorSourceService (`caVar10`..`caVar12` & `caVar21` di d0.java)
             writeMessage(1) {
                 writeVarint(1, CH_SENSOR)
                 writeMessage(2) {
                     writeMessage(1) {
-                        writeVarint(1, 1) // SENSOR_DRIVING_STATUS_DATA = 1
+                        writeVarint(1, 13)
+                    }
+                    writeMessage(1) {
+                        writeVarint(1, 10)
                     }
                 }
             }
 
-            // 2. Channel 2: MediaSinkService (`caVar14` & `caVar15` di d0.java)
+            // Channel 2: MediaSinkService Video (`caVar13`..`caVar14` & `caVar22` di d0.java)
             writeMessage(1) {
                 writeVarint(1, CH_VIDEO)
                 writeMessage(3) {
                     writeVarint(1, 3) // MEDIA_CODEC_VIDEO_H264_BP = 3
-                    // KRUSIAL: Field 4 dari MediaSinkService adalah `video_configs`!
-                    writeMessage(4) {
-                        writeVarint(1, 2) // codec_resolution = _1280x720 (2)
-                        writeVarint(2, 1) // frame_rate = _60 (1)
-                        writeVarint(3, OmowayViewportConfig.aaWidthMargin)  // 160 (1280 - 160 = 1120)
-                        writeVarint(4, OmowayViewportConfig.aaHeightMargin) // 360 (720 - 360 = 360)
-                        writeVarint(5, 160) // density = 160 dpi
+                    writeMessage(4) { // video_configs (Field 4)
+                        writeVarint(1, 2) // 1280x720
+                        writeVarint(2, 1) // 60 FPS
+                        writeVarint(3, OmowayViewportConfig.aaWidthMargin)  // 160
+                        writeVarint(4, OmowayViewportConfig.aaHeightMargin) // 360
+                        writeVarint(5, 160) // 160 dpi
                     }
-                    writeVarint(5, 1) // available_while_in_call = true
+                    writeVarint(5, 1)
                 }
             }
 
-            // 3. Channel 3: InputSourceService (`caVar17` & `caVar18` di d0.java)
+            // Channel 3: InputSourceService (`caVar19` & `caVar23` di d0.java) + Touchscreen
             writeMessage(1) {
                 writeVarint(1, CH_INPUT)
                 writeMessage(4) {
                     for (kc in supportedKeys) {
                         writeVarint(1, kc)
                     }
-                    writeMessage(2) { // Touchscreen 1120x360 Capacitive
+                    writeMessage(2) {
                         writeVarint(1, OmowayViewportConfig.aaActiveWidth)
                         writeVarint(2, OmowayViewportConfig.aaActiveHeight)
-                        writeVarint(3, 1) // CAPACITIVE = 1
+                        writeVarint(3, 1)
                     }
                 }
             }
 
-            // Head Unit Metadata (`caVar19` di d0.java)
-            writeString(2, "Riding Display")
-            writeString(3, "Motorcycle")
+            // Channel 4: MediaSinkService Audio (`caVar15`..`caVar16` & `caVar24` di d0.java)
+            writeMessage(1) {
+                writeVarint(1, CH_AUDIO)
+                writeMessage(3) {
+                    writeVarint(1, 1) // MEDIA_CODEC_AUDIO_PCM = 1
+                    writeVarint(2, 2) // AUDIO_STREAM_GUIDANCE = 2
+                    writeMessage(3) { // audio_configs (Field 3)
+                        writeVarint(1, 16000)
+                        writeVarint(2, 16)
+                        writeVarint(3, 1)
+                    }
+                }
+            }
+
+            // Channel 5: MediaSourceService Microphone (`caVar17`..`caVar18` & `caVar25` di d0.java)
+            writeMessage(1) {
+                writeVarint(1, CH_MIC)
+                writeMessage(5) {
+                    writeVarint(1, 1) // MEDIA_CODEC_AUDIO_PCM = 1
+                    writeMessage(2) {
+                        writeVarint(1, 16000)
+                        writeVarint(2, 16)
+                        writeVarint(3, 1)
+                    }
+                }
+            }
+
+            // Head Unit Metadata (`d0.java` lines 370-379)
+            writeString(2, "SDMV")
+            writeString(3, "WayXAuto")
+            writeString(4, "2026")
+            writeString(5, "SDMV-WAYXAUTO")
             writeVarint(6, 0)
-            writeString(7, "OMOWAY")
-            writeString(8, "UMOX Auto")
-            writeString(9, "2.0")
-            writeVarint(10, 0)
+            writeString(7, "SDMV")
+            writeString(8, "WayXAuto")
+            writeString(9, "1")
+            writeString(10, "1.0")
+            writeVarint(11, 0)
         }
     }
 

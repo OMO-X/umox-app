@@ -38,8 +38,10 @@ import com.umox.app.stream.ScreenCastService
 import com.umox.app.stream.SocketStreamer
 import com.umox.app.stream.StreamMode
 import com.umox.app.wifi.WifiP2pProbe
+import java.net.BindException
+import java.net.InetAddress
 import java.net.InetSocketAddress
-import java.net.Socket
+import java.net.ServerSocket
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -57,6 +59,7 @@ class MainActivity : AppCompatActivity() {
     private val discoveredBleDevices = mutableMapOf<String, BleDeviceItem>()
     private var hasAutoConnectedBle = false
     private var activePreviewSurface: Surface? = null
+    private var pendingAutoStartAaAfterSettings = false
 
     @Volatile
     private var isAaServerListening: Boolean = false
@@ -277,6 +280,7 @@ class MainActivity : AppCompatActivity() {
     private fun setupClickListeners() {
         // Langkah 1: Buka Pengaturan Server Unit Kepala Android Auto
         binding.btnOpenAaSettings.setOnClickListener {
+            pendingAutoStartAaAfterSettings = true
             openAndroidAutoHeadUnitServer()
         }
 
@@ -464,22 +468,50 @@ class MainActivity : AppCompatActivity() {
         ).show()
     }
 
+    /**
+     * Mengecek apakah port 5277 sedang aktif TANPA melakukan `Socket.connect()`
+     * (persis `v.i(Context)` di WayXAuto: `Socket.connect` lalu `close` akan membunuh sesi tunggal
+     * `DeveloperHeadUnitNetworkService` milik Google Android Auto!).
+     */
     private fun probeAaServerAsync() {
         probeExecutor.execute {
-            var active = false
-            try {
-                Socket().use { s ->
-                    s.connect(InetSocketAddress("127.0.0.1", AaHeadlessReceiver.AA_PORT_LOCAL), 250)
-                    active = true
+            val active = if (ScreenCastService.isStreamingActive &&
+                ScreenCastService.currentMode == StreamMode.ANDROID_AUTO &&
+                ScreenCastService.activeAaReceiver?.isVideoStreaming == true
+            ) {
+                true
+            } else {
+                try {
+                    ServerSocket().use { ss ->
+                        ss.reuseAddress = false
+                        ss.bind(
+                            InetSocketAddress(
+                                InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1)),
+                                AaHeadlessReceiver.AA_PORT_LOCAL
+                            ),
+                            1
+                        )
+                    }
+                    false
+                } catch (e: BindException) {
+                    val msg = e.message.orEmpty()
+                    msg.contains("EADDRINUSE", ignoreCase = true) || msg.contains("in use", ignoreCase = true)
+                } catch (_: Exception) {
+                    false
                 }
-            } catch (_: Exception) {
-                active = false
             }
             val p2pActive = wifiP2pProbe.isGroupConnected
             if (isAaServerListening != active || isMotorNetworkReady != p2pActive) {
                 isAaServerListening = active
                 isMotorNetworkReady = p2pActive
-                uiHandler.post { refreshDashboardState() }
+                uiHandler.post {
+                    refreshDashboardState()
+                    if (active && pendingAutoStartAaAfterSettings && !ScreenCastService.isStreamingActive) {
+                        pendingAutoStartAaAfterSettings = false
+                        appendLog("★ Server Unit Kepala 5277 terdeteksi aktif! Memulai Android Auto otomatis...")
+                        startAndroidAutoService()
+                    }
+                }
             }
         }
     }
