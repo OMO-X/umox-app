@@ -315,6 +315,63 @@
                 </LinearLayout>
             </LinearLayout>
 
+            <!-- INTERACTIVE LIVE PREVIEW 960x360 (Sentuh Langsung untuk Kontrol Android Auto) -->
+            <FrameLayout
+                android:id="@+id/cardLivePreview"
+                android:layout_width="match_parent"
+                android:layout_height="142dp"
+                android:layout_marginBottom="12dp"
+                android:background="@drawable/bg_glass_inner"
+                android:padding="2dp">
+
+                <TextureView
+                    android:id="@+id/textureLivePreview"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent" />
+
+                <LinearLayout
+                    android:id="@+id/layoutPreviewPlaceholder"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:padding="12dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="sans-serif-black"
+                        android:letterSpacing="0.06"
+                        android:text="PRATINJAU LIVE 960×360 • 60 FPS ZERO-DELAY"
+                        android:textColor="#00E5FF"
+                        android:textSize="11sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:gravity="center"
+                        android:text="Tampilan Android Auto / Mirror / Test Video muncul langsung di sini.\nSentuh area pratinjau untuk mengontrol Android Auto."
+                        android:textColor="#8B949E"
+                        android:textSize="10.5sp" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tvPreviewHudOverlay"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="top|end"
+                    android:layout_margin="6dp"
+                    android:background="#B30A1018"
+                    android:fontFamily="monospace"
+                    android:paddingHorizontal="8dp"
+                    android:paddingVertical="3dp"
+                    android:text="960×360 • 60Hz GOP-6"
+                    android:textColor="#00E676"
+                    android:textSize="9.5sp"
+                    android:textStyle="bold" />
+            </FrameLayout>
+
             <!-- PRIMARY CTA: MULAI ANDROID AUTO / HENTIKAN -->
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnStartAndroidAuto"
@@ -322,7 +379,7 @@
                 android:layout_height="56dp"
                 android:insetTop="0dp"
                 android:insetBottom="0dp"
-                android:text="🚀  MULAI ANDROID AUTO"
+                android:text="🚀  MULAI ANDROID AUTO (60 FPS)"
                 android:textColor="#041016"
                 android:textSize="14.5sp"
                 android:fontFamily="sans-serif-black"
@@ -349,11 +406,66 @@
                 app:strokeColor="#5C2028"
                 app:strokeWidth="1dp" />
 
+            <!-- BARIS ROTARY KNOB STANG MOTOR (Putar Kiri / Pilih / Putar Kanan) -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnRotaryPrev"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="36dp"
+                    android:layout_marginEnd="5dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="◀ Putar Kiri"
+                    android:textColor="#00E5FF"
+                    android:textSize="10.5sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#122230"
+                    app:cornerRadius="9dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnRotarySelect"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="36dp"
+                    android:layout_marginEnd="5dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="● Pilih (Enter)"
+                    android:textColor="#00E676"
+                    android:textSize="10.5sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#122822"
+                    app:cornerRadius="9dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnRotaryNext"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="36dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="Putar Kanan ▶"
+                    android:textColor="#00E5FF"
+                    android:textSize="10.5sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#122230"
+                    app:cornerRadius="9dp" />
+            </LinearLayout>
+
             <!-- QUICK REMOTE BAR UNTUK KONTROL ANDROID AUTO -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="6dp"
                 android:orientation="horizontal">
 
                 <com.google.android.material.button.MaterialButton
@@ -899,11 +1011,12 @@
                     android:id="@+id/tvConsoleLog"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:focusable="false"
+                    android:focusableInTouchMode="false"
                     android:fontFamily="monospace"
                     android:lineSpacingExtra="2dp"
                     android:text="[INIT] UMOX Auto 2.0 siap.\n"
                     android:textColor="#7EE787"
-                    android:textIsSelectable="true"
                     android:textSize="10.5sp" />
             </ScrollView>
         </LinearLayout>

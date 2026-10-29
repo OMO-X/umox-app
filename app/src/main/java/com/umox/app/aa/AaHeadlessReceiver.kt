@@ -7,8 +7,11 @@ import android.os.Build
 import android.util.Log
 import android.view.Surface
 import com.umox.app.stream.H264NaluSanitizer
+import com.umox.app.stream.MediaEncoder
+import com.umox.app.stream.OmowayViewportConfig
+import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
-import java.io.DataOutputStream
+import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -17,17 +20,15 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Native Android Auto Headless Receiver & Hardware GPU Bridge.
+ * Native Android Auto Headless Receiver & 1280x720 Widescreen Hardware Decoder.
  *
- * Fitur Utama:
- * 1. Menghubungkan langsung ke Android Auto Head Unit Server (`127.0.0.1:5277`) atau
- *    menerima koneksi masuk di port `5288`.
- * 2. Negosiasi SSL/TLS (BoringSSL In-Memory BIO) dan Service Discovery Protobuf lengkap.
- * 3. **Hardware GPU Surface Bridge**: Mendekode stream H.264 Android Auto (`800x480`) langsung
- *    ke `Surface` input milik `MediaEncoder` (`960x360` @ 30 FPS CBR) tanpa menyentuh CPU (0% copy),
- *    dilengkapi fallback otomatis ke `H264NaluSanitizer`.
- * 4. Mendukung injeksi tombol remot (`sendKey`) dan sinkronisasi tema Siang/Malam (`sendNightMode`)
- *    otomatis dari sensor cahaya speedometer Omoway (`Channel 7, Msg 37`).
+ * Mengadopsi protokol eksak dari `d0.java`, `l.java`, `g0.java`, `v.java`, dan `z.java` pada WayXAuto:
+ * 1. Menghubungkan ke Android Auto Head Unit Server (`127.0.0.1:5277`) dengan fallback port `5288`.
+ * 2. Mengirim `ServiceDiscoveryResponse` dengan `MediaSinkService.video_configs` (Field 4!)
+ *    pada resolusi `1280x720 @ 60 FPS` (`width_margin = 160, height_margin = 360` -> area aktif `1120x360` widescreen).
+ * 3. Mengirim urutan pembuka video lengkap: `MEDIA_SETUP_RESPONSE (0x8003)` -> `MEDIA_START_INDICATION (0x8001)` -> `VIDEO_FOCUS_INDICATION (0x8008)`.
+ * 4. Mendekode stream H.264 Android Auto ke `SurfaceTexture` milik `EglSurfaceCropper` (Zero-CPU-Copy).
+ * 5. Mendukung Touch Input langsung pada Live Preview (`sendTouch`), Key Event (`sendKey`), dan Rotary (`sendRotary`).
  */
 class AaHeadlessReceiver(
     private val context: Context,
@@ -40,13 +41,11 @@ class AaHeadlessReceiver(
         const val AA_PORT_LOCAL = 5277
         const val AA_PORT_INCOMING = 5288
 
-        // Channel IDs
+        // Channel IDs (persis d0.java: 0=Control, 1=Sensor, 2=Video, 3=Input)
         const val CH_CONTROL = 0
         const val CH_SENSOR = 1
         const val CH_VIDEO = 2
         const val CH_INPUT = 3
-        const val CH_AUDIO_MAIN = 4
-        const val CH_AUDIO_SYS = 5
 
         // Frame Flags
         const val FLAG_FIRST = 0x01
@@ -55,9 +54,9 @@ class AaHeadlessReceiver(
         const val FLAG_CONTROL = 0x04
         const val FLAG_ENCRYPTED = 0x08
 
-        // Android KeyCodes untuk Remote Control Cepat
-        const val KEYCODE_BACK = 4
+        // Android KeyCodes untuk Remote Control & Rotary
         const val KEYCODE_HOME = 3
+        const val KEYCODE_BACK = 4
         const val KEYCODE_DPAD_UP = 19
         const val KEYCODE_DPAD_DOWN = 20
         const val KEYCODE_DPAD_LEFT = 21
@@ -66,32 +65,47 @@ class AaHeadlessReceiver(
         const val KEYCODE_MEDIA_PLAY_PAUSE = 85
         const val KEYCODE_MEDIA_NEXT = 87
         const val KEYCODE_MEDIA_PREVIOUS = 88
-        const val KEYCODE_NAVIGATION = 280
         const val KEYCODE_MUSIC = 209
+        const val KEYCODE_NAVIGATION = 280
+        const val KEYCODE_ROTARY = 65536
+        const val KEYCODE_CUSTOM_2 = 65538
     }
 
     private val isRunning = AtomicBoolean(false)
     private val executor = Executors.newCachedThreadPool()
+    private val inputExecutor = Executors.newSingleThreadExecutor()
+
     private var activeSocket: Socket? = null
     private var serverSocket: ServerSocket? = null
     private var tlsEngine: AaTlsEngine? = null
-    private var dataOut: DataOutputStream? = null
+    private var rawOut: OutputStream? = null
+    private val writeLock = Any()
 
-    private var videoSessionId = 0
-    private var hwDecoder: MediaCodec? = null
-    private val decoderLock = Any()
+    @Volatile
+    var isInputChannelOpen: Boolean = false
+        private set
+
+    @Volatile
+    var isVideoStreaming: Boolean = false
+        private set
 
     @Volatile
     var isNightModeActive: Boolean = false
         private set
 
-    // Fallback sanitizer jika outputSurface tidak digunakan
+    private var videoSessionId = 0
+    private var hwDecoder: MediaCodec? = null
+    private var decoderConfigured = false
+    private var cachedSps = ByteArray(0)
+    private var cachedPps = ByteArray(0)
+    private val decoderLock = Any()
+
     private val fallbackSanitizer = H264NaluSanitizer { cleanPacket, _ ->
         onH264Frame(cleanPacket, 0, cleanPacket.size)
     }
 
-    // Reassembly Buffers per Channel (max 16 channels)
-    private val rxBuffers = Array(16) { ByteBuffer.allocate(512 * 1024) }
+    // Reassembly Buffers per Channel (`h0.java` di WayXAuto)
+    private val rxBuffers = HashMap<Int, ByteArrayOutputStream>()
 
     fun start() {
         if (isRunning.getAndSet(true)) return
@@ -100,6 +114,16 @@ class AaHeadlessReceiver(
 
     fun stop() {
         isRunning.set(false)
+        // Kirim BYEBYE_REQUEST jika sesi masih hidup (`a0.java` line 90)
+        try {
+            if (isVideoStreaming) {
+                val bye = AaProto.encode { writeVarint(1, 1) }
+                sendEncryptedMessage(CH_CONTROL, false, 0x000F, bye)
+            }
+        } catch (_: Exception) {}
+
+        isInputChannelOpen = false
+        isVideoStreaming = false
         releaseHwDecoder()
         try {
             activeSocket?.close()
@@ -109,12 +133,26 @@ class AaHeadlessReceiver(
         } catch (_: Exception) {}
     }
 
-    private fun initHwDecoderIfNeeded() {
-        val surface = outputSurface ?: return
+    /**
+     * Menginisialisasi / mengonfigurasi ulang Hardware AVC Decoder (`g0.java` di WayXAuto).
+     */
+    private fun ensureHwDecoderConfigured(sps: ByteArray, pps: ByteArray): MediaCodec? {
+        val surface = outputSurface ?: return null
         synchronized(decoderLock) {
-            if (hwDecoder != null) return
-            try {
-                val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 800, 480).apply {
+            if (hwDecoder != null && decoderConfigured) {
+                return hwDecoder
+            }
+            releaseHwDecoder()
+            return try {
+                val width = OmowayViewportConfig.aaSourceWidth
+                val height = OmowayViewportConfig.aaSourceHeight
+                val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+                    if (sps.isNotEmpty()) {
+                        setByteBuffer("csd-0", ByteBuffer.wrap(sps))
+                    }
+                    if (pps.isNotEmpty()) {
+                        setByteBuffer("csd-1", ByteBuffer.wrap(pps))
+                    }
                     setInteger(MediaFormat.KEY_PRIORITY, 0)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                         setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
@@ -124,47 +162,99 @@ class AaHeadlessReceiver(
                 decoder.configure(format, surface, null, 0)
                 decoder.start()
                 hwDecoder = decoder
-                Log.i(TAG, "Hardware AVC Decoder -> GPU Surface Bridge berhasil diinisialisasi")
+                decoderConfigured = true
+                Log.i(TAG, "✔ Hardware AVC Decoder (${width}x${height}) -> GL SurfaceTexture siap!")
+                decoder
             } catch (e: Exception) {
-                Log.w(TAG, "Gagal inisialisasi HW Decoder ke Surface, beralih ke NALU Sanitizer langsung: ${e.message}")
+                Log.w(TAG, "Gagal konfigurasi HW Decoder: ${e.message}")
                 hwDecoder = null
+                decoderConfigured = false
+                null
             }
         }
     }
 
+    /**
+     * Mendekode paket H.264 dari Android Auto ke `SurfaceTexture` (`g0.a` & `g0.b` di WayXAuto).
+     */
     private fun feedToHwDecoder(data: ByteArray, offset: Int, length: Int, isConfig: Boolean, ptsUs: Long) {
-        val decoder = synchronized(decoderLock) { hwDecoder }
+        val slice = data.copyOfRange(offset, offset + length)
+        val normalized = MediaEncoder.normalizeAnnexBNalus(slice)
+        if (normalized.isEmpty()) return
+
+        val sps = MediaEncoder.extractNaluByType(7, normalized)
+        val pps = MediaEncoder.extractNaluByType(8, normalized)
+        val spsChanged = sps.isNotEmpty() && !sps.contentEquals(cachedSps)
+        val ppsChanged = pps.isNotEmpty() && !pps.contentEquals(cachedPps)
+        if (sps.isNotEmpty()) cachedSps = sps
+        if (pps.isNotEmpty()) cachedPps = pps
+
+        if (spsChanged || ppsChanged) {
+            synchronized(decoderLock) {
+                decoderConfigured = false
+            }
+        }
+
+        val decoder = ensureHwDecoderConfigured(cachedSps, cachedPps)
         if (decoder == null) {
-            fallbackSanitizer.processAnnexB(data, offset, length)
+            if (!isConfig) {
+                fallbackSanitizer.processAnnexB(normalized, 0, normalized.size)
+            }
             return
         }
 
-        try {
-            val inIdx = decoder.dequeueInputBuffer(8_000L)
-            if (inIdx >= 0) {
-                val inBuf = decoder.getInputBuffer(inIdx)
-                inBuf?.clear()
-                inBuf?.put(data, offset, length)
-                val flags = if (isConfig) MediaCodec.BUFFER_FLAG_CODEC_CONFIG else 0
-                decoder.queueInputBuffer(inIdx, 0, length, ptsUs, flags)
-            }
+        synchronized(decoderLock) {
+            try {
+                val info = MediaCodec.BufferInfo()
+                drainDecoderOutputs(decoder, info)
 
-            val info = MediaCodec.BufferInfo()
-            var outIdx = decoder.dequeueOutputBuffer(info, 0L)
-            while (outIdx >= 0) {
-                // Render langsung ke GPU Surface milik MediaEncoder (960x360)
-                decoder.releaseOutputBuffer(outIdx, true)
-                outIdx = decoder.dequeueOutputBuffer(info, 0L)
+                var inIdx = decoder.dequeueInputBuffer(10_000L)
+                if (inIdx < 0) {
+                    drainDecoderOutputs(decoder, info)
+                    inIdx = decoder.dequeueInputBuffer(10_000L)
+                }
+
+                if (inIdx >= 0) {
+                    val inBuf = decoder.getInputBuffer(inIdx)
+                    if (inBuf != null && inBuf.capacity() >= normalized.size) {
+                        inBuf.clear()
+                        inBuf.put(normalized)
+                        val flags = if (isConfig) MediaCodec.BUFFER_FLAG_CODEC_CONFIG else 0
+                        val safePts = if (ptsUs > 0L) ptsUs else (System.nanoTime() / 1000L)
+                        decoder.queueInputBuffer(inIdx, 0, normalized.size, safePts, flags)
+                    } else {
+                        decoder.queueInputBuffer(inIdx, 0, 0, 0L, 0)
+                    }
+                }
+
+                drainDecoderOutputs(decoder, info)
+            } catch (e: Exception) {
+                Log.w(TAG, "HW Decoder reset karena error: ${e.message}")
+                releaseHwDecoder()
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "HW Decoder error, fallback ke direct NALU: ${e.message}")
-            releaseHwDecoder()
-            fallbackSanitizer.processAnnexB(data, offset, length)
+        }
+    }
+
+    private fun drainDecoderOutputs(decoder: MediaCodec, info: MediaCodec.BufferInfo) {
+        while (true) {
+            val outIdx = decoder.dequeueOutputBuffer(info, 0L)
+            if (outIdx >= 0) {
+                val shouldRender = info.size > 0 && (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
+                decoder.releaseOutputBuffer(outIdx, shouldRender)
+            } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                val fmt = decoder.outputFormat
+                val decW = fmt.getInteger(MediaFormat.KEY_WIDTH)
+                val decH = fmt.getInteger(MediaFormat.KEY_HEIGHT)
+                Log.i(TAG, "Format output Decoder AA: ${decW}x${decH}")
+            } else {
+                break
+            }
         }
     }
 
     private fun releaseHwDecoder() {
         synchronized(decoderLock) {
+            decoderConfigured = false
             try {
                 hwDecoder?.stop()
             } catch (_: Exception) {}
@@ -183,7 +273,8 @@ class AaHeadlessReceiver(
             try {
                 socket = Socket()
                 socket.tcpNoDelay = true
-                socket.connect(InetSocketAddress("127.0.0.1", AA_PORT_LOCAL), 2000)
+                socket.soTimeout = 5000
+                socket.connect(InetSocketAddress("127.0.0.1", AA_PORT_LOCAL), 2500)
                 onStatusChanged("✔ Terhubung ke Server Lokal Android Auto (5277)")
             } catch (_: Exception) {
                 try {
@@ -193,18 +284,17 @@ class AaHeadlessReceiver(
 
                 try {
                     if (serverSocket == null || serverSocket!!.isClosed) {
-                        serverSocket = ServerSocket()
-                        serverSocket?.reuseAddress = true
-                        serverSocket?.bind(InetSocketAddress("0.0.0.0", AA_PORT_INCOMING))
+                        serverSocket = ServerSocket().apply {
+                            reuseAddress = true
+                            bind(InetSocketAddress("0.0.0.0", AA_PORT_INCOMING))
+                        }
                     }
-                    serverSocket?.soTimeout = 2500
-                    onStatusChanged("Menunggu Android Auto di port 5277 / 5288 (Pastikan 'Server unit kepala' aktif di AA)...")
+                    serverSocket?.soTimeout = 2000
+                    onStatusChanged("Menunggu Server Unit Kepala Android Auto (127.0.0.1:5277)...")
                     socket = serverSocket?.accept()
                     socket?.tcpNoDelay = true
-                    onStatusChanged("✔ Android Auto masuk via Wireless Port 5288!")
-                } catch (_: Exception) {
-                    // Timeout, ulangi loop cek 5277
-                }
+                    onStatusChanged("✔ Android Auto terhubung via Port 5288!")
+                } catch (_: Exception) {}
             }
 
             if (socket != null && socket.isConnected) {
@@ -212,9 +302,13 @@ class AaHeadlessReceiver(
                 try {
                     runSession(socket)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Sesi AA terputus: ${e.message}")
-                    onStatusChanged("Sesi Android Auto terputus: ${e.message}")
+                    if (isRunning.get()) {
+                        Log.w(TAG, "Sesi AA berakhir: ${e.message}")
+                        onStatusChanged("Menyambungkan ulang ke Android Auto...")
+                    }
                 } finally {
+                    isInputChannelOpen = false
+                    isVideoStreaming = false
                     releaseHwDecoder()
                     try {
                         socket.close()
@@ -224,7 +318,11 @@ class AaHeadlessReceiver(
             }
 
             if (isRunning.get()) {
-                Thread.sleep(1000)
+                try {
+                    Thread.sleep(1000)
+                } catch (_: InterruptedException) {
+                    break
+                }
             }
         }
     }
@@ -233,35 +331,34 @@ class AaHeadlessReceiver(
         val tls = AaTlsEngine(context)
         tlsEngine = tls
 
-        initHwDecoderIfNeeded()
-
         val dIn = DataInputStream(socket.getInputStream())
-        val dOut = DataOutputStream(socket.getOutputStream())
-        dataOut = dOut
+        val out = socket.getOutputStream()
+        rawOut = out
+        rxBuffers.clear()
 
-        for (b in rxBuffers) b.clear()
+        // 1. Kirim Version Request (Major 1, Minor 1 - persis WayXAuto l.java line 113)
+        onStatusChanged("Handshake protokol AAP v1.1...")
+        val verReq = byteArrayOf(0x00, 0x01, 0x00, 0x01, 0x00, 0x01)
+        sendRawFrame(out, CH_CONTROL, FLAG_BULK, verReq)
 
-        // 1. Kirim Version Request (Major 1, Minor 7)
-        onStatusChanged("Handshake protokol AAP v1.7...")
-        val verReq = ByteBuffer.allocate(6)
-            .putShort(0x0001) // MSG_VERSION_REQUEST
-            .putShort(1)      // Major = 1
-            .putShort(7)      // Minor = 7
-            .array()
-        sendRawFrame(dOut, CH_CONTROL, FLAG_BULK, verReq)
+        // Disable read timeout setelah handshake awal berjalan
+        socket.soTimeout = 0
 
-        // 2. Main Read Loop
+        // 2. Main Read Loop (`l.java` + `h0.java` di WayXAuto)
+        val header = ByteArray(4)
+        val totalLenBuf = ByteArray(4)
+
         while (isRunning.get() && !socket.isClosed) {
-            val ch = dIn.readUnsignedByte()
-            val flags = dIn.readUnsignedByte()
-            val len = dIn.readUnsignedShort()
+            dIn.readFully(header)
+            val ch = header[0].toInt() and 0xFF
+            val flags = header[1].toInt() and 0xFF
+            val len = ((header[2].toInt() and 0xFF) shl 8) or (header[3].toInt() and 0xFF)
 
-            val totalLen = if ((flags and FLAG_FIRST) != 0 && (flags and FLAG_LAST) == 0) {
-                dIn.readInt()
-            } else {
-                0
+            val isFirst = (flags and FLAG_FIRST) != 0
+            val isLast = (flags and FLAG_LAST) != 0
+            if (isFirst && !isLast) {
+                dIn.readFully(totalLenBuf)
             }
-            if (totalLen < 0) continue
 
             val payload = ByteArray(len)
             dIn.readFully(payload)
@@ -272,19 +369,29 @@ class AaHeadlessReceiver(
                 payload
             }
 
-            val buf = rxBuffers[ch and 0x0F]
-            if ((flags and FLAG_FIRST) != 0) {
-                buf.clear()
-            }
-            buf.put(decrypted)
-
-            if ((flags and FLAG_LAST) != 0) {
-                buf.flip()
-                val msgBytes = ByteArray(buf.remaining())
-                buf.get(msgBytes)
-                handleCompleteMessage(ch, flags, msgBytes)
+            val completeMsg = reassembleFrame(ch, flags, decrypted)
+            if (completeMsg != null) {
+                handleCompleteMessage(ch, flags, completeMsg)
             }
         }
+    }
+
+    private fun reassembleFrame(ch: Int, flags: Int, chunk: ByteArray): ByteArray? {
+        val isFirst = (flags and FLAG_FIRST) != 0
+        val isLast = (flags and FLAG_LAST) != 0
+        if (isFirst && isLast) {
+            rxBuffers.remove(ch)
+            return chunk
+        }
+        var stream = rxBuffers[ch]
+        if (isFirst || stream == null) {
+            stream = ByteArrayOutputStream(chunk.size * 4)
+            rxBuffers[ch] = stream
+        }
+        stream.write(chunk, 0, chunk.size)
+        if (!isLast) return null
+        rxBuffers.remove(ch)
+        return stream.toByteArray()
     }
 
     private fun handleCompleteMessage(ch: Int, flags: Int, msg: ByteArray) {
@@ -298,43 +405,40 @@ class AaHeadlessReceiver(
             return
         }
 
-        val isControlFlag = (flags and FLAG_CONTROL) != 0
-        if (isControlFlag && msgType == 0x0007) {
-            // CHANNEL_OPEN_REQUEST -> Balas CHANNEL_OPEN_RESPONSE (status = 0 OK)
-            val resp = AaProto.encode { writeVarint(1, 0) }
-            sendEncryptedMessage(ch, true, 0x0008, resp)
-
-            if (ch == CH_SENSOR) {
-                sendInitialSensors()
-            } else if (ch == CH_VIDEO) {
-                onStatusChanged("Saluran Video AA terbuka, meminta fokus proyeksi...")
-                requestVideoFocus()
-            }
-            return
-        }
-
         when (ch) {
             CH_SENSOR -> handleSensorChannel(msgType, msg, bodyOffset, bodyLen)
             CH_VIDEO -> handleVideoChannel(msgType, msg, bodyOffset, bodyLen)
-            CH_AUDIO_MAIN, CH_AUDIO_SYS -> handleAudioChannel(ch, msgType, msg, bodyOffset, bodyLen)
+            CH_INPUT -> handleInputChannel(msgType)
+            else -> {
+                if ((flags and FLAG_CONTROL) != 0 && msgType == 0x0007) {
+                    val resp = AaProto.encode { writeVarint(1, 0) }
+                    sendEncryptedMessage(ch, true, 0x0008, resp)
+                }
+            }
         }
     }
 
     private fun handleControlMessage(msgType: Int, msg: ByteArray, offset: Int, len: Int) {
         val tls = tlsEngine ?: return
-        val dOut = dataOut ?: return
+        val out = rawOut ?: return
 
         when (msgType) {
-            0x0002 -> { // VERSION_RESPONSE
-                onStatusChanged("Memulai jabat tangan SSL/TLS...")
+            0x0002 -> { // VERSION_RESPONSE (`d0.java` line 253)
+                if (len >= 6) {
+                    val status = ((msg[offset + 4].toInt() and 0xFF) shl 8) or (msg[offset + 5].toInt() and 0xFF)
+                    if (status == 0xFFFF) {
+                        throw IllegalStateException("Versi protokol Android Auto tidak kompatibel")
+                    }
+                }
+                onStatusChanged("Memulai negosiasi TLS Android Auto...")
                 val clientHello = tls.processHandshake(null)
                 val frame = ByteBuffer.allocate(2 + clientHello.size)
                     .putShort(0x0003.toShort())
                     .put(clientHello)
                     .array()
-                sendRawFrame(dOut, CH_CONTROL, FLAG_BULK, frame)
+                sendRawFrame(out, CH_CONTROL, FLAG_BULK, frame)
             }
-            0x0003 -> { // SSL_HANDSHAKE dari AA
+            0x0003 -> { // SSL_HANDSHAKE (`d0.java` line 268)
                 val slice = msg.copyOfRange(offset, offset + len)
                 val reply = tls.processHandshake(slice)
                 if (reply.isNotEmpty()) {
@@ -342,173 +446,142 @@ class AaHeadlessReceiver(
                         .putShort(0x0003.toShort())
                         .put(reply)
                         .array()
-                    sendRawFrame(dOut, CH_CONTROL, FLAG_BULK, frame)
+                    sendRawFrame(out, CH_CONTROL, FLAG_BULK, frame)
                 }
                 if (tls.isHandshakeFinished) {
                     onStatusChanged("✔ Enkripsi TLS Android Auto Aktif!")
                     val authComplete = AaProto.encode { writeVarint(1, 0) }
-                    sendRawFrame(
-                        dOut,
-                        CH_CONTROL,
-                        FLAG_BULK,
-                        ByteBuffer.allocate(2 + authComplete.size)
-                            .putShort(0x0004.toShort())
-                            .put(authComplete)
-                            .array()
-                    )
+                    val frame = ByteBuffer.allocate(2 + authComplete.size)
+                        .putShort(0x0004.toShort())
+                        .put(authComplete)
+                        .array()
+                    sendRawFrame(out, CH_CONTROL, FLAG_BULK, frame)
                 }
             }
-            0x0005 -> { // SERVICE_DISCOVERY_REQUEST
-                onStatusChanged("Mengirim profil layar widescreen Omoway ke Android Auto...")
+            0x0005 -> { // SERVICE_DISCOVERY_REQUEST (`d0.java` line 284)
+                onStatusChanged("Mengirim profil layar widescreen 1280×720 (Active 1120×360) ke Android Auto...")
                 val sdr = buildServiceDiscoveryResponse()
                 sendEncryptedMessage(CH_CONTROL, false, 0x0006, sdr)
             }
-            0x000B -> { // PING_REQUEST
-                val slice = msg.copyOfRange(offset, offset + len)
-                sendEncryptedMessage(CH_CONTROL, false, 0x000C, slice)
+            0x000B -> { // PING_REQUEST (`d0.java` line 289)
+                val pingResp = AaProto.encode {
+                    writeVarint(1, 1)
+                    writeVarint(2, 0)
+                }
+                sendEncryptedMessage(CH_CONTROL, false, 0x000C, pingResp)
             }
-            0x000D -> { // NAVIGATION_FOCUS_REQUEST
-                val navResp = AaProto.encode { writeVarint(1, 1) } // NAVIGATION_FOCUS_PROJECTED
+            0x000D -> { // NAVIGATION_FOCUS_REQUEST (`d0.java` line 292 -> field 1 = 2!)
+                val navResp = AaProto.encode { writeVarint(1, 2) }
                 sendEncryptedMessage(CH_CONTROL, false, 0x000E, navResp)
             }
-            0x0012 -> { // AUDIO_FOCUS_REQUEST
+            0x000F -> { // BYEBYE_REQUEST (`d0.java` line 297)
+                val byeResp = AaProto.encode { writeVarint(1, 0) }
+                sendEncryptedMessage(CH_CONTROL, false, 0x0010, byeResp)
+            }
+            0x0012 -> { // AUDIO_FOCUS_REQUEST (`d0.java` line 242 & `v.e`)
                 val reqFields = AaProto.parseFields(msg, offset, len)
                 val reqType = reqFields[1]?.firstOrNull() as? Long ?: 1L
-                val state = if (reqType == 4L) 7L else 1L // GAIN atau RELEASE
-                val afResp = AaProto.encode { writeVarint(1, state) }
+                val state = if (reqType == 4L) 7L else 1L
+                val afResp = AaProto.encode {
+                    writeVarint(1, state)
+                    writeVarint(2, 0)
+                }
                 sendEncryptedMessage(CH_CONTROL, false, 0x0013, afResp)
             }
         }
     }
 
     private fun handleSensorChannel(msgType: Int, msg: ByteArray, offset: Int, len: Int) {
-        if (msgType == 0x8001) { // SENSOR_START_REQUEST
-            val resp = AaProto.encode { writeVarint(1, 0) } // STATUS_OK
-            sendEncryptedMessage(CH_SENSOR, false, 0x8002, resp)
-            sendInitialSensors()
-        }
-    }
-
-    private fun sendInitialSensors() {
-        // DrivingStatus = UNRESTRICTED (0)
-        val drivingEvent = AaProto.encode {
-            writeMessage(13) {
-                writeVarint(1, 0)
+        when (msgType) {
+            0x0007 -> { // CHANNEL_OPEN_REQUEST (`d0.java` line 209)
+                val resp = AaProto.encode { writeVarint(1, 0) }
+                sendEncryptedMessage(CH_SENSOR, true, 0x0008, resp)
             }
-        }
-        sendEncryptedMessage(CH_SENSOR, false, 0x8003, drivingEvent)
+            0x8001 -> { // SENSOR_START_REQUEST (`d0.java` line 213)
+                val startResp = AaProto.encode { writeVarint(1, 0) }
+                sendEncryptedMessage(CH_SENSOR, false, 0x8002, startResp)
 
-        // NightMode sesuai status saat ini
-        sendNightMode(isNightModeActive)
-    }
-
-    /**
-     * Sinkronisasi Tema Siang / Malam Android Auto (Google Maps otomatis berganti tema!).
-     */
-    fun sendNightMode(isNight: Boolean) {
-        isNightModeActive = isNight
-        if (!isRunning.get() || activeSocket == null) return
-        executor.execute {
-            try {
-                val nightEvent = AaProto.encode {
-                    writeMessage(10) {
-                        writeBool(1, isNight)
+                // Kirim DrivingStatus = UNRESTRICTED (0) (`d0.java` lines 217-223)
+                val drivingEvent = AaProto.encode {
+                    writeMessage(1) {
+                        writeVarint(1, 0)
                     }
                 }
-                sendEncryptedMessage(CH_SENSOR, false, 0x8003, nightEvent)
-            } catch (_: Exception) {}
-        }
-    }
-
-    /**
-     * Mengirimkan event tombol (Keycode Android) ke Android Auto (Maps, Music, Back, Home, D-Pad).
-     */
-    fun sendKey(keyCode: Int) {
-        if (!isRunning.get() || activeSocket == null) return
-        executor.execute {
-            try {
-                sendKeyReport(keyCode, true)
-                Thread.sleep(60)
-                sendKeyReport(keyCode, false)
-            } catch (_: Exception) {}
-        }
-    }
-
-    private fun sendKeyReport(keyCode: Int, isDown: Boolean) {
-        val nowUs = System.nanoTime() / 1000L
-        val report = AaProto.encode {
-            writeVarint(1, nowUs)
-            writeMessage(3) { // KeyEvent
-                writeMessage(1) { // Key
-                    writeVarint(1, keyCode)
-                    writeBool(2, isDown)
-                    writeVarint(3, 0)
-                    writeBool(4, false)
-                }
+                sendEncryptedMessage(CH_SENSOR, false, 0x8003, drivingEvent)
             }
         }
-        sendEncryptedMessage(CH_INPUT, false, 0x8001, report)
     }
 
     private fun handleVideoChannel(msgType: Int, msg: ByteArray, offset: Int, len: Int) {
         when (msgType) {
-            0x0000 -> { // MEDIA_MESSAGE_DATA (8-byte timestamp + H.264 NALU)
+            0x0007 -> { // CHANNEL_OPEN_REQUEST (`d0.java` line 182)
+                val resp = AaProto.encode { writeVarint(1, 0) }
+                sendEncryptedMessage(CH_VIDEO, true, 0x0008, resp)
+                onStatusChanged("Saluran Video AA terbuka, mengaktifkan proyeksi...")
+            }
+            0x8000 -> { // MEDIA_SETUP_REQUEST (`d0.java` lines 186-198)
+                // 1. Balas MEDIA_SETUP_RESPONSE (0x8003): status=2(OK), max_unacked=1, config_index=0
+                val setupResp = AaProto.encode {
+                    writeVarint(1, 2)
+                    writeVarint(2, 1)
+                    writeVarint(3, 0)
+                }
+                sendEncryptedMessage(CH_VIDEO, false, 0x8003, setupResp)
+
+                // 2. WAJIB: Kirim MEDIA_START_INDICATION (0x8001): session=0, config=0 (`d0.java` line 195)
+                videoSessionId = 0
+                val startInd = AaProto.encode {
+                    writeVarint(1, videoSessionId)
+                    writeVarint(2, 0)
+                }
+                sendEncryptedMessage(CH_VIDEO, false, 0x8001, startInd)
+
+                // 3. Kirim VIDEO_FOCUS_INDICATION (0x8008): mode=1(PROJECTED), unsolicited=0 (`d0.java` line 198)
+                sendVideoFocusIndication(1)
+                isVideoStreaming = true
+                onStatusChanged("★ Streaming Android Auto Aktif (960×360 @ 60 FPS Zero-Copy)!")
+            }
+            0x8007 -> { // VIDEO_FOCUS_REQUEST (`d0.java` line 199)
+                val fields = AaProto.parseFields(msg, offset, len)
+                val focusMode = (fields[2]?.firstOrNull() as? Long ?: 1L).toInt()
+                sendVideoFocusIndication(focusMode)
+            }
+            0x0000 -> { // MEDIA_WITH_TIMESTAMP (`d0.java` line 137)
                 if (len > 8) {
                     val ptsUs = ByteBuffer.wrap(msg, offset, 8).long
-                    // Segera balas ACK agar encoder Android Auto di HP tidak menahan frame berikutnya
-                    sendMediaAck(CH_VIDEO, videoSessionId, 1)
-                    // Kirim ke Hardware GPU Decoder -> Surface MediaEncoder (960x360)
                     feedToHwDecoder(msg, offset + 8, len - 8, false, ptsUs)
+                    sendMediaAck(CH_VIDEO, videoSessionId, 1)
                 }
             }
-            0x0001 -> { // MEDIA_MESSAGE_CODEC_CONFIG (SPS / PPS)
-                sendMediaAck(CH_VIDEO, videoSessionId, 1)
+            0x0001 -> { // MEDIA_DATA / CODEC_CONFIG (`d0.java` line 158)
                 if (len > 0) {
                     feedToHwDecoder(msg, offset, len, true, 0L)
                 }
-            }
-            0x8000 -> { // MEDIA_SETUP_REQUEST
-                val setupResp = AaProto.encode {
-                    writeVarint(1, 2) // Status = OK (2)
-                    writeVarint(2, 2) // Max unacked = 2
-                    writeVarint(3, 0) // Config index = 0
-                }
-                sendEncryptedMessage(CH_VIDEO, false, 0x8003, setupResp)
-                requestVideoFocus()
-            }
-            0x8001 -> { // MEDIA_START_REQUEST
-                val fields = AaProto.parseFields(msg, offset, len)
-                videoSessionId = (fields[1]?.firstOrNull() as? Long ?: 0L).toInt()
-                onStatusChanged("★ Streaming Android Auto Aktif (960x360 @ 30 FPS)!")
-            }
-            0x8007 -> { // VIDEO_FOCUS_REQUEST
-                requestVideoFocus()
+                sendMediaAck(CH_VIDEO, videoSessionId, 1)
             }
         }
     }
 
-    private fun handleAudioChannel(ch: Int, msgType: Int, msg: ByteArray, offset: Int, len: Int) {
+    private fun handleInputChannel(msgType: Int) {
         when (msgType) {
-            0x0000, 0x0001 -> {
-                sendMediaAck(ch, 0, 1)
+            0x0007 -> { // CHANNEL_OPEN_REQUEST (`d0.java` line 116)
+                val resp = AaProto.encode { writeVarint(1, 0) }
+                sendEncryptedMessage(CH_INPUT, true, 0x0008, resp)
+                isInputChannelOpen = true
             }
-            0x8000 -> {
-                val setupResp = AaProto.encode {
-                    writeVarint(1, 2)
-                    writeVarint(2, 2)
-                    writeVarint(3, 0)
-                }
-                sendEncryptedMessage(ch, false, 0x8003, setupResp)
+            0x8002 -> { // KEY_BINDING_REQUEST (`d0.java` line 123)
+                val resp = AaProto.encode { writeVarint(1, 0) }
+                sendEncryptedMessage(CH_INPUT, false, 0x8003, resp)
             }
         }
     }
 
-    private fun requestVideoFocus() {
-        val vfNotif = AaProto.encode {
-            writeVarint(1, 1) // VIDEO_FOCUS_PROJECTED = 1
-            writeBool(2, false)
+    private fun sendVideoFocusIndication(mode: Int) {
+        val vf = AaProto.encode {
+            writeVarint(1, mode)
+            writeVarint(2, 0)
         }
-        sendEncryptedMessage(CH_VIDEO, false, 0x8008, vfNotif)
+        sendEncryptedMessage(CH_VIDEO, false, 0x8008, vf)
     }
 
     private fun sendMediaAck(ch: Int, session: Int, ackCount: Int) {
@@ -520,126 +593,201 @@ class AaHeadlessReceiver(
     }
 
     /**
-     * Membangun ServiceDiscoveryResponse sesuai skema resmi `control.proto`:
-     * - VideoConfiguration (Field 1=codec_resolution(1=_800x480), Field 2=frame_rate(1=_60),
-     *   Field 3=margin_width(0), Field 4=margin_height(0), Field 5=density(130),
-     *   Field 10=video_codec_type(3=H264_BP)).
-     * - InputChannel dengan dukungan Touchscreen + Keycodes Navigasi/Media/D-Pad.
+     * Mengirim KeyEvent ke Android Auto (`z.java` & `v.d` di WayXAuto: Field 4 dari InputReport adalah `key_event`!).
+     */
+    fun sendKey(keyCode: Int) {
+        if (!isRunning.get() || activeSocket == null) return
+        inputExecutor.execute {
+            try {
+                val nowNs = System.nanoTime()
+                sendEncryptedMessage(CH_INPUT, false, 0x8001, buildKeyReport(nowNs, keyCode, true))
+                sendEncryptedMessage(CH_INPUT, false, 0x8001, buildKeyReport(nowNs + 1_000_000L, keyCode, false))
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Mengirim putaran Rotary Controller (`z.java` & `v.h` di WayXAuto: Field 6 dari InputReport adalah `relative_event`).
+     */
+    fun sendRotary(delta: Int) {
+        if (!isRunning.get() || activeSocket == null) return
+        inputExecutor.execute {
+            try {
+                val nowNs = System.nanoTime()
+                val report = AaProto.encode {
+                    writeVarint(1, nowNs)
+                    writeMessage(6) { // relative_event
+                        writeMessage(1) {
+                            writeVarint(1, KEYCODE_ROTARY)
+                            writeVarint(2, delta)
+                        }
+                    }
+                }
+                sendEncryptedMessage(CH_INPUT, false, 0x8001, report)
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Mengirim Touch Event langsung dari sentuhan jari pada Live Preview (`Field 3 = touch_event`).
+     * @param normX posisi X relatif (0.0 .. 1.0)
+     * @param normY posisi Y relatif (0.0 .. 1.0)
+     * @param action 0 = ACTION_DOWN, 1 = ACTION_UP, 2 = ACTION_MOVE
+     */
+    fun sendTouch(normX: Float, normY: Float, action: Int) {
+        if (!isRunning.get() || activeSocket == null) return
+        val x = (normX.coerceIn(0f, 1f) * OmowayViewportConfig.aaActiveWidth).toInt()
+        val y = (normY.coerceIn(0f, 1f) * OmowayViewportConfig.aaActiveHeight).toInt()
+        inputExecutor.execute {
+            try {
+                val nowNs = System.nanoTime()
+                val report = AaProto.encode {
+                    writeVarint(1, nowNs)
+                    writeMessage(3) { // touch_event
+                        writeMessage(1) { // pointer_data
+                            writeVarint(1, x)
+                            writeVarint(2, y)
+                            writeVarint(3, 0) // pointer_id = 0
+                        }
+                        writeVarint(3, action)
+                    }
+                }
+                sendEncryptedMessage(CH_INPUT, false, 0x8001, report)
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun sendNightMode(isNight: Boolean) {
+        isNightModeActive = isNight
+        if (!isRunning.get() || activeSocket == null) return
+        inputExecutor.execute {
+            try {
+                val nightEvent = AaProto.encode {
+                    writeMessage(10) {
+                        writeBool(1, isNight)
+                    }
+                }
+                sendEncryptedMessage(CH_SENSOR, false, 0x8003, nightEvent)
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun buildKeyReport(timestampNs: Long, keyCode: Int, isDown: Boolean): ByteArray {
+        return AaProto.encode {
+            writeVarint(1, timestampNs)
+            writeMessage(4) { // Field 4 = key_event (`v.d` di WayXAuto)
+                writeMessage(1) {
+                    writeVarint(1, keyCode)
+                    writeVarint(2, if (isDown) 1 else 0)
+                    writeVarint(3, 0)
+                    writeVarint(4, 0)
+                }
+            }
+        }
+    }
+
+    /**
+     * Membangun `ServiceDiscoveryResponse` persis seperti `d0.java` lines 314-380 di WayXAuto:
+     * - Channel 1 (Sensor): DRIVING_STATUS (1)
+     * - Channel 2 (MediaSink): available_type=3 (H264_BP), field 4 (video_configs) = 1280x720 @ 60fps
+     *   dengan width_margin=160 & height_margin=360 (menghasilkan area aktif widescreen 1120x360!), field 5=1
+     * - Channel 3 (InputSource): Keycodes + Touchscreen 1120x360 Capacitive
      */
     private fun buildServiceDiscoveryResponse(): ByteArray {
         val supportedKeys = intArrayOf(
             KEYCODE_HOME, KEYCODE_BACK,
             KEYCODE_DPAD_UP, KEYCODE_DPAD_DOWN, KEYCODE_DPAD_LEFT, KEYCODE_DPAD_RIGHT, KEYCODE_DPAD_CENTER,
             KEYCODE_MEDIA_PLAY_PAUSE, KEYCODE_MEDIA_NEXT, KEYCODE_MEDIA_PREVIOUS,
-            KEYCODE_NAVIGATION, KEYCODE_MUSIC
+            KEYCODE_MUSIC, KEYCODE_NAVIGATION,
+            KEYCODE_ROTARY, KEYCODE_CUSTOM_2
         )
 
         return AaProto.encode {
-            // 1. Channel 1: Sensor Service
+            // 1. Channel 1: SensorSourceService (`caVar12` di d0.java)
             writeMessage(1) {
                 writeVarint(1, CH_SENSOR)
                 writeMessage(2) {
-                    writeMessage(1) { writeVarint(1, 13) } // DRIVING_STATUS
-                    writeMessage(1) { writeVarint(1, 10) } // NIGHT_DATA
-                }
-            }
-            // 2. Channel 2: Video Sink Service (MediaSinkService field 3)
-            writeMessage(1) {
-                writeVarint(1, CH_VIDEO)
-                writeMessage(3) {
-                    writeVarint(1, 3) // MEDIA_CODEC_VIDEO_H264_BP (3)
-                    // VideoConfiguration (field 3) sesuai control.proto
-                    writeMessage(3) {
-                        writeVarint(1, 1)   // codec_resolution = _800x480 (1)
-                        writeVarint(2, 1)   // frame_rate = _60 (1)
-                        writeVarint(3, 0)   // width_margin = 0
-                        writeVarint(4, 0)   // height_margin = 0
-                        writeVarint(5, 130) // density = 130 dpi (pas untuk layar widescreen motor)
-                        writeVarint(10, 3)  // video_codec_type = MEDIA_CODEC_VIDEO_H264_BP (3)
+                    writeMessage(1) {
+                        writeVarint(1, 1) // SENSOR_DRIVING_STATUS_DATA = 1
                     }
                 }
             }
-            // 3. Channel 3: Input Source Service (Touchscreen + Keycodes)
+
+            // 2. Channel 2: MediaSinkService (`caVar14` & `caVar15` di d0.java)
+            writeMessage(1) {
+                writeVarint(1, CH_VIDEO)
+                writeMessage(3) {
+                    writeVarint(1, 3) // MEDIA_CODEC_VIDEO_H264_BP = 3
+                    // KRUSIAL: Field 4 dari MediaSinkService adalah `video_configs`!
+                    writeMessage(4) {
+                        writeVarint(1, 2) // codec_resolution = _1280x720 (2)
+                        writeVarint(2, 1) // frame_rate = _60 (1)
+                        writeVarint(3, OmowayViewportConfig.aaWidthMargin)  // 160 (1280 - 160 = 1120)
+                        writeVarint(4, OmowayViewportConfig.aaHeightMargin) // 360 (720 - 360 = 360)
+                        writeVarint(5, 160) // density = 160 dpi
+                    }
+                    writeVarint(5, 1) // available_while_in_call = true
+                }
+            }
+
+            // 3. Channel 3: InputSourceService (`caVar17` & `caVar18` di d0.java)
             writeMessage(1) {
                 writeVarint(1, CH_INPUT)
                 writeMessage(4) {
                     for (kc in supportedKeys) {
                         writeVarint(1, kc)
                     }
-                    writeMessage(2) { // Touchscreen 800x480
-                        writeVarint(1, 800)
-                        writeVarint(2, 480)
-                    }
-                }
-            }
-            // 4. Channel 4: Media Audio Sink
-            writeMessage(1) {
-                writeVarint(1, CH_AUDIO_MAIN)
-                writeMessage(3) {
-                    writeVarint(1, 1) // PCM
-                    writeVarint(2, 3) // AUDIO_STREAM_MEDIA
-                    writeMessage(4) {
-                        writeVarint(1, 48000)
-                        writeVarint(2, 16)
-                        writeVarint(3, 2)
-                    }
-                }
-            }
-            // 5. Channel 5: System / Navigation Guidance Audio Sink
-            writeMessage(1) {
-                writeVarint(1, CH_AUDIO_SYS)
-                writeMessage(3) {
-                    writeVarint(1, 1) // PCM
-                    writeVarint(2, 1) // AUDIO_STREAM_GUIDANCE
-                    writeMessage(4) {
-                        writeVarint(1, 16000)
-                        writeVarint(2, 16)
-                        writeVarint(3, 1)
+                    writeMessage(2) { // Touchscreen 1120x360 Capacitive
+                        writeVarint(1, OmowayViewportConfig.aaActiveWidth)
+                        writeVarint(2, OmowayViewportConfig.aaActiveHeight)
+                        writeVarint(3, 1) // CAPACITIVE = 1
                     }
                 }
             }
 
-            // Head Unit Metadata
-            writeString(2, "OMOWAY")
-            writeString(3, "DesaySV-960x360")
-            writeString(4, "2026")
-            writeString(5, "UMOX-AA-2.0")
-            writeBool(6, true) // Left-hand drive
+            // Head Unit Metadata (`caVar19` di d0.java)
+            writeString(2, "Riding Display")
+            writeString(3, "Motorcycle")
+            writeVarint(6, 0)
             writeString(7, "OMOWAY")
-            writeString(8, "UMOX Native Bridge")
+            writeString(8, "UMOX Auto")
             writeString(9, "2.0")
-            writeBool(10, false)
-            writeVarint(11, 2) // DISPLAY_TYPE_CLUSTER / AUXILIARY
+            writeVarint(10, 0)
         }
     }
 
-    @Synchronized
     private fun sendEncryptedMessage(ch: Int, isControlFlag: Boolean, msgType: Int, payload: ByteArray) {
         val tls = tlsEngine ?: return
-        val dOut = dataOut ?: return
+        val out = rawOut ?: return
 
-        val plain = ByteBuffer.allocate(2 + payload.size)
-            .putShort(msgType.toShort())
-            .put(payload)
-            .array()
+        synchronized(writeLock) {
+            val plain = ByteBuffer.allocate(2 + payload.size)
+                .putShort(msgType.toShort())
+                .put(payload)
+                .array()
 
-        val encrypted = tls.encrypt(plain)
-        var flags = FLAG_BULK or FLAG_ENCRYPTED
-        if (isControlFlag) flags = flags or FLAG_CONTROL
+            val encrypted = tls.encrypt(plain)
+            var flags = FLAG_BULK or FLAG_ENCRYPTED
+            if (isControlFlag) flags = flags or FLAG_CONTROL
 
-        sendRawFrame(dOut, ch, flags, encrypted)
+            sendRawFrame(out, ch, flags, encrypted)
+        }
     }
 
-    @Synchronized
-    private fun sendRawFrame(dOut: DataOutputStream, ch: Int, flags: Int, data: ByteArray) {
-        try {
-            dOut.writeByte(ch and 0xFF)
-            dOut.writeByte(flags and 0xFF)
-            dOut.writeShort(data.size and 0xFFFF)
-            dOut.write(data)
-            dOut.flush()
-        } catch (e: Exception) {
-            Log.e(TAG, "Gagal menulis frame ke AA: ${e.message}")
+    private fun sendRawFrame(out: OutputStream, ch: Int, flags: Int, data: ByteArray) {
+        synchronized(writeLock) {
+            try {
+                val frame = ByteArray(4 + data.size)
+                frame[0] = (ch and 0xFF).toByte()
+                frame[1] = (flags or FLAG_BULK and 0xFF).toByte()
+                frame[2] = ((data.size ushr 8) and 0xFF).toByte()
+                frame[3] = (data.size and 0xFF).toByte()
+                System.arraycopy(data, 0, frame, 4, data.size)
+                out.write(frame)
+                out.flush()
+            } catch (e: Exception) {
+                Log.w(TAG, "Gagal menulis frame ke AA: ${e.message}")
+            }
         }
     }
 }

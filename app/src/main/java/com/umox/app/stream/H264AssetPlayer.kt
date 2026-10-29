@@ -1,125 +1,212 @@
 package com.umox.app.stream
 
 import android.content.Context
-import kotlinx.coroutines.*
+import android.graphics.SurfaceTexture
+import android.media.MediaCodec
+import android.media.MediaFormat
+import android.os.SystemClock
+import android.view.Surface
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.io.InputStream
+import java.nio.ByteBuffer
 
 /**
- * Pemutar video H.264 Baseline langsung dari assets APK.
- * Memancarkan frame H.264 Baseline (Constrained Baseline, Level 3.1) @ 30 FPS
- * yang terbukti 100% kompatibel dan tampil sempurna di speedometer Desay SV Omoway.
+ * Pemutar video H.264 Baseline langsung dari assets APK (`test_baseline.h264`).
+ * Mengeluarkan `EncodedVideoFrame` terstruktur (`sps`, `pps`, `annexBSlice`, `isKeyFrame`, `presentationTimeUs`)
+ * agar 100% sesuai dengan header video Desay SV (`p.java`), serta merender ke Live Preview di layar HP.
  */
 class H264AssetPlayer(
     private val context: Context,
     private val assetFilename: String = "test_baseline.h264",
     private val fps: Int = 30,
-    private val onPacketReady: (ByteArray) -> Unit,
+    private val onFrameReady: (EncodedVideoFrame) -> Unit,
     private val onLog: (String) -> Unit
 ) {
+    private data class ParsedSlice(
+        val sliceNalu: ByteArray,
+        val isKeyFrame: Boolean
+    )
+
     private var playJob: Job? = null
+
     @Volatile
     private var isPlaying = false
-    @Volatile
-    private var requestKeyFrameFlag = false
 
-    private val frames = mutableListOf<ByteArray>()
+    @Volatile
+    private var requestKeyFrameFlag = true
+
+    private var spsBytes = ByteArray(0)
+    private var ppsBytes = ByteArray(0)
+    private val slices = mutableListOf<ParsedSlice>()
+
+    private val previewLock = Object()
+    private var boundSurfaceTexture: SurfaceTexture? = null
+    private var previewSurface: Surface? = null
+    private var previewDecoder: MediaCodec? = null
+
+    private fun ensurePreviewDecoderLocked() {
+        val targetSt = OmowayViewportConfig.previewSurfaceTexture
+        if (targetSt == null) {
+            if (previewDecoder != null) {
+                releasePreviewDecoderLocked()
+            }
+            return
+        }
+        if (boundSurfaceTexture === targetSt && previewDecoder != null) {
+            return
+        }
+        releasePreviewDecoderLocked()
+        if (spsBytes.isEmpty() || ppsBytes.isEmpty()) return
+        try {
+            val surf = Surface(targetSt)
+            if (!surf.isValid) {
+                surf.release()
+                return
+            }
+            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 960, 360).apply {
+                val csd0 = ByteBuffer.allocate(4 + spsBytes.size).apply {
+                    put(byteArrayOf(0, 0, 0, 1))
+                    put(spsBytes)
+                    flip()
+                }
+                val csd1 = ByteBuffer.allocate(4 + ppsBytes.size).apply {
+                    put(byteArrayOf(0, 0, 0, 1))
+                    put(ppsBytes)
+                    flip()
+                }
+                setByteBuffer("csd-0", csd0)
+                setByteBuffer("csd-1", csd1)
+            }
+            val dec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            dec.configure(format, surf, null, 0)
+            dec.start()
+            boundSurfaceTexture = targetSt
+            previewSurface = surf
+            previewDecoder = dec
+            requestKeyFrameFlag = true
+        } catch (_: Exception) {
+            releasePreviewDecoderLocked()
+        }
+    }
+
+    private fun releasePreviewDecoderLocked() {
+        val dec = previewDecoder
+        previewDecoder = null
+        if (dec != null) {
+            try {
+                dec.stop()
+            } catch (_: Exception) {}
+            try {
+                dec.release()
+            } catch (_: Exception) {}
+        }
+        val surf = previewSurface
+        previewSurface = null
+        boundSurfaceTexture = null
+        if (surf != null) {
+            try {
+                surf.release()
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun feedPreviewDecoder(sliceAnnexB: ByteArray, ptsUs: Long) {
+        synchronized(previewLock) {
+            ensurePreviewDecoderLocked()
+            val dec = previewDecoder ?: return
+            try {
+                val inIdx = dec.dequeueInputBuffer(0)
+                if (inIdx >= 0) {
+                    val buf = dec.getInputBuffer(inIdx)
+                    buf?.clear()
+                    buf?.put(sliceAnnexB)
+                    dec.queueInputBuffer(inIdx, 0, sliceAnnexB.size, ptsUs, 0)
+                }
+                val info = MediaCodec.BufferInfo()
+                var outIdx = dec.dequeueOutputBuffer(info, 0)
+                while (outIdx >= 0) {
+                    dec.releaseOutputBuffer(outIdx, true)
+                    outIdx = dec.dequeueOutputBuffer(info, 0)
+                }
+            } catch (_: Exception) {
+                releasePreviewDecoderLocked()
+            }
+        }
+    }
 
     fun loadFrames(): Boolean {
-        try {
+        return try {
             val input: InputStream = context.assets.open(assetFilename)
             val raw = input.readBytes()
             input.close()
 
-            // 1. Temukan seluruh start code NALU (00 00 00 01 atau 00 00 01)
-            val indices = mutableListOf<Pair<Int, Int>>() // Pair(startPos, scLen)
-            var i = 0
-            while (i < raw.size - 2) {
-                if (raw[i] == 0.toByte() && raw[i + 1] == 0.toByte() && raw[i + 2] == 1.toByte()) {
-                    val scLen = if (i > 0 && raw[i - 1] == 0.toByte()) 4 else 3
-                    val startPos = if (scLen == 4) i - 1 else i
-                    indices.add(Pair(startPos, scLen))
-                    i += 3
-                } else {
-                    i++
+            spsBytes = MediaEncoder.extractNaluByType(7, raw)
+            ppsBytes = MediaEncoder.extractNaluByType(8, raw)
+            slices.clear()
+
+            for (nalu in MediaEncoder.splitNalus(raw)) {
+                if (nalu.isEmpty()) continue
+                val ntype = nalu[0].toInt() and 0x1F
+                if (ntype == 5 || ntype == 1) {
+                    val fullNalu = ByteArray(4 + nalu.size)
+                    fullNalu[3] = 1
+                    System.arraycopy(nalu, 0, fullNalu, 4, nalu.size)
+                    slices.add(ParsedSlice(fullNalu, isKeyFrame = (ntype == 5)))
                 }
             }
 
-            val nalus = mutableListOf<ByteArray>()
-            for (j in 0 until indices.size) {
-                val (startPos, scLen) = indices[j]
-                val endPos = if (j + 1 < indices.size) indices[j + 1].first else raw.size
-                val naluData = ByteArray(endPos - (startPos + scLen))
-                System.arraycopy(raw, startPos + scLen, naluData, 0, naluData.size)
-                // Normalize dengan 4-byte Annex-B start code (00 00 00 01)
-                val fullNalu = ByteArray(4 + naluData.size)
-                fullNalu[0] = 0; fullNalu[1] = 0; fullNalu[2] = 0; fullNalu[3] = 1
-                System.arraycopy(naluData, 0, fullNalu, 4, naluData.size)
-                nalus.add(fullNalu)
-            }
-
-            // 2. Kelompokkan SPS (7) + PPS (8) + IDR (5) menjadi satu paket KeyFrame utuh
-            frames.clear()
-            var sps = byteArrayOf()
-            var pps = byteArrayOf()
-            for (n in nalus) {
-                val ntype = n[4].toInt() and 0x1F
-                when (ntype) {
-                    7 -> { // SPS
-                        sps = n
-                    }
-                    8 -> { // PPS
-                        pps = n
-                    }
-                    5 -> { // IDR Slice
-                        val keyframe = mutableListOf<Byte>()
-                        if (sps.isNotEmpty()) keyframe.addAll(sps.toList())
-                        if (pps.isNotEmpty()) keyframe.addAll(pps.toList())
-                        keyframe.addAll(n.toList())
-                        frames.add(keyframe.toByteArray())
-                    }
-                    1 -> { // Non-IDR P-Frame
-                        frames.add(n)
-                    }
-                }
-            }
-
-            onLog("✔ Berhasil memuat $assetFilename: ${frames.size} frame H.264 Baseline siap tayang!")
-            return frames.isNotEmpty()
+            onLog("✔ Asset $assetFilename siap: ${slices.size} frame (SPS=${spsBytes.size}B, PPS=${ppsBytes.size}B).")
+            slices.isNotEmpty()
         } catch (e: Exception) {
             onLog("⚠ Gagal memuat asset $assetFilename: ${e.message}")
-            return false
+            false
         }
     }
 
     fun start() {
         if (isPlaying) return
-        if (frames.isEmpty()) {
-            if (!loadFrames()) return
-        }
+        if (slices.isEmpty() && !loadFrames()) return
 
         isPlaying = true
         val frameIntervalMs = 1000L / fps
 
         playJob = CoroutineScope(Dispatchers.IO).launch {
-            onLog("★ MEMANCARKAN STREAM VIDEO HUD STANDALONE KE SPEEDOMETER (@ $fps FPS)...")
+            onLog("★ Memancarkan Test Video Baseline ($assetFilename @ $fps FPS)...")
             var frameIdx = 0
+            val startUs = SystemClock.elapsedRealtimeNanos() / 1000L
+            var emittedCount = 0L
 
             while (isActive && isPlaying) {
-                val t0 = System.currentTimeMillis()
+                val t0 = SystemClock.elapsedRealtime()
 
                 if (requestKeyFrameFlag) {
                     requestKeyFrameFlag = false
-                    frameIdx = 0 // Reset ke Frame 0 (SPS + PPS + IDR KeyFrame)
-                    onLog("► Menyuntikkan IDR KeyFrame atas permintaan speedometer!")
+                    val firstIdr = slices.indexOfFirst { it.isKeyFrame }
+                    if (firstIdr >= 0) frameIdx = firstIdr
                 }
 
-                val frame = frames[frameIdx]
-                onPacketReady(frame)
+                val item = slices[frameIdx]
+                val ptsUs = startUs + (emittedCount * 1_000_000L / fps)
+                val frame = EncodedVideoFrame(
+                    annexBSlice = item.sliceNalu,
+                    isKeyFrame = item.isKeyFrame,
+                    presentationTimeUs = ptsUs,
+                    sps = spsBytes,
+                    pps = ppsBytes
+                )
+                onFrameReady(frame)
+                feedPreviewDecoder(item.sliceNalu, ptsUs)
 
-                frameIdx = (frameIdx + 1) % frames.size
+                emittedCount++
+                frameIdx = (frameIdx + 1) % slices.size
 
-                val elapsed = System.currentTimeMillis() - t0
-                val sleepTime = (frameIntervalMs - elapsed).coerceAtLeast(0L)
+                val elapsed = SystemClock.elapsedRealtime() - t0
+                val sleepTime = (frameIntervalMs - elapsed).coerceAtLeast(1L)
                 delay(sleepTime)
             }
         }
@@ -131,7 +218,12 @@ class H264AssetPlayer(
 
     fun stop() {
         isPlaying = false
-        playJob?.cancel()
+        val job = playJob
         playJob = null
+        job?.cancel()
+        synchronized(previewLock) {
+            releasePreviewDecoderLocked()
+        }
     }
 }
+

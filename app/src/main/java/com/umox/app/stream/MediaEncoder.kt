@@ -1,5 +1,6 @@
 package com.umox.app.stream
 
+import android.graphics.SurfaceTexture
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.MediaCodec
@@ -8,229 +9,501 @@ import android.media.MediaFormat
 import android.media.projection.MediaProjection
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.SystemClock
 import android.view.Surface
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.locks.LockSupport
 
 /**
- * Hardware H.264 Baseline Encoder (960x360) dengan GPU Surface Input (`COLOR_FormatSurface`).
+ * Data paket frame H.264 terstruktur untuk dikirim ke Desay SV Port 9528 (`p.java` di WayXAuto).
+ */
+data class EncodedVideoFrame(
+    val annexBSlice: ByteArray,
+    val isKeyFrame: Boolean,
+    val presentationTimeUs: Long,
+    val sps: ByteArray,
+    val pps: ByteArray
+)
+
+/**
+ * Hardware H.264 Baseline 60 FPS Encoder + OpenGL ES 2.0 Surface Cropper & Frame Repeater.
  *
- * Mendukung 2 mode operasi Zero-CPU-Copy:
- * 1. **Hardware Surface Bridge (`startSurfaceBridge`)**: Menerima render langsung dari
- *    Hardware Decoder Android Auto ke `inputSurface` GPU, melakukan scaling hardware ke `960x360`,
- *    menjaga frame rate konstan 30 FPS (`KEY_REPEAT_PREVIOUS_FRAME_AFTER`), dan men-sanitasi NALU.
- * 2. **Screen Mirroring (`start(mediaProjection)`)**: Merekam layar penuh via `VirtualDisplay`.
+ * Mengadopsi arsitektur `g.java`, `f.java`, `z8.java`, `qt.java`, dan `r5.java` dari WayXAuto:
+ * - Resolusi Output: `960x360` @ `60 FPS`, `4.000.000 bps (4 Mbps)` CBR Baseline Profile.
+ * - Forced Keyframe Interval: Setiap **6 frame** (10 Keyframe per detik!) untuk pemulihan instan 0 delay.
+ * - 60Hz Frame Repeater: Mengulang frame terakhir di GPU setiap 16.67ms saat layar diam agar speedometer
+ *   tidak pernah membeku dan requestKeyFrame() langsung dijawab dalam <16ms.
  */
 class MediaEncoder(
     private val width: Int = 960,
     private val height: Int = 360,
     private val dpi: Int = 160,
-    private val bitrate: Int = 2_500_000,
-    private val fps: Int = 30,
-    private val onPacketEncoded: (ByteArray, Boolean) -> Unit,
+    private val bitrate: Int = 4_000_000,
+    private val fps: Int = 60,
+    private val onFrameEncoded: (EncodedVideoFrame) -> Unit,
+    private val onFirstSourceFrame: (() -> Unit)? = null,
     private val onLog: (String) -> Unit
 ) {
-    private var mediaCodec: MediaCodec? = null
+    private val isRunning = AtomicBoolean(false)
+    private val forceKeyFrameRequested = AtomicBoolean(true)
+    private val pendingCaptureFrames = AtomicInteger(0)
+
+    private var encoderThread: Thread? = null
     private var virtualDisplay: VirtualDisplay? = null
 
-    var inputSurface: Surface? = null
+    @Volatile
+    var decoderInputSurface: Surface? = null
         private set
 
     @Volatile
-    private var isRunning = false
-    private var encoderThread: Thread? = null
+    var capturedSourceFrames: Long = 0L
+        private set
 
-    private val naluSanitizer = H264NaluSanitizer { cleanPacket, isKeyFrame ->
-        onPacketEncoded(cleanPacket, isKeyFrame)
-    }
+    @Volatile
+    var encodedOutputFrames: Long = 0L
+        private set
 
     /**
-     * Mode 1: Mulai encoder dan kembalikan `Surface` input GPU (untuk Android Auto Hardware Bridge).
+     * Mode 1: Mulai pipeline 60 FPS OpenGL Surface Bridge untuk Android Auto (input 1280x720 -> crop 1120x360 -> encode 960x360).
      */
     fun startSurfaceBridge(): Surface? {
-        if (isRunning) return inputSurface
-        return try {
-            configureAndStartCodec()
-            onLog("✔ Hardware H.264 Surface Bridge aktif (${width}x${height} @ ${fps}fps, ${bitrate / 1000} kbps CBR).")
-            inputSurface
-        } catch (e: Exception) {
-            onLog("✖ Gagal memulai Hardware Surface Bridge: ${e.message}")
-            stop()
-            null
-        }
-    }
+        if (isRunning.get()) return decoderInputSurface
+        val readyLatch = CountDownLatch(1)
+        var startupError: Throwable? = null
 
-    /**
-     * Mode 2: Mulai encoder dengan `MediaProjection` untuk Screen Mirroring.
-     */
-    fun start(mediaProjection: MediaProjection) {
-        if (isRunning) return
-        try {
-            configureAndStartCodec()
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                mediaProjection.registerCallback(object : MediaProjection.Callback() {
-                    override fun onStop() {
-                        onLog("MediaProjection dihentikan oleh sistem.")
-                        stop()
-                    }
-                }, null)
-            }
-
-            virtualDisplay = mediaProjection.createVirtualDisplay(
-                "UMOX-ClusterDisplay",
-                width,
-                height,
-                dpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                inputSurface,
-                null,
-                null
+        isRunning.set(true)
+        encoderThread = Thread({
+            runGlEncoderLoop(
+                sourceWidth = OmowayViewportConfig.aaSourceWidth,
+                sourceHeight = OmowayViewportConfig.aaSourceHeight,
+                cropX = OmowayViewportConfig.aaActiveWidth.toFloat() / OmowayViewportConfig.aaSourceWidth.toFloat(),
+                cropY = OmowayViewportConfig.aaActiveHeight.toFloat() / OmowayViewportConfig.aaSourceHeight.toFloat(),
+                mediaProjection = null,
+                onReady = { readyLatch.countDown() },
+                onError = { err ->
+                    startupError = err
+                    readyLatch.countDown()
+                }
             )
-
-            onLog("✔ Hardware Screen Encoder aktif (${width}x${height} @ ${fps}fps, Baseline CBR).")
-        } catch (e: Exception) {
-            onLog("✖ Gagal memulai MediaEncoder: ${e.message}")
-            stop()
-        }
-    }
-
-    private fun configureAndStartCodec() {
-        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
-            setInteger(
-                MediaFormat.KEY_COLOR_FORMAT,
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
-            )
-            setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // Keyframe setiap 1 detik
-
-            // KRUSIAL: Paksa GraphicBufferSource mengulang frame terakhir setiap 33.3ms (30 FPS)
-            // ketika layar/peta sedang diam, sehingga stream tidak pernah membeku 5-10 detik
-            // dan requestKeyFrame() selalu direspons instan (<33ms)!
-            setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 1_000_000L / fps)
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, fps.toFloat())
-            }
-
-            // Prioritas realtime (0) & Low Latency
-            setInteger(MediaFormat.KEY_PRIORITY, 0)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-            }
-
-            // H.264 Baseline Profile Level 3.1 (wajib untuk decoder Linux Desay SV)
-            setInteger(
-                MediaFormat.KEY_PROFILE,
-                MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline
-            )
-            setInteger(
-                MediaFormat.KEY_LEVEL,
-                MediaCodecInfo.CodecProfileLevel.AVCLevel31
-            )
-            setInteger(
-                MediaFormat.KEY_BITRATE_MODE,
-                MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
-            )
-        }
-
-        val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        inputSurface = codec.createInputSurface()
-        codec.start()
-        mediaCodec = codec
-
-        isRunning = true
-        encoderThread = Thread({ drainEncoderLoop() }, "UMOX-HwEncoder").apply {
+        }, "UMOX-GlEncoder60").apply {
             priority = Thread.MAX_PRIORITY
             start()
         }
+
+        readyLatch.await(3500, TimeUnit.MILLISECONDS)
+        if (startupError != null || decoderInputSurface == null) {
+            onLog("✖ Gagal memulai 60 FPS GL Surface Bridge: ${startupError?.message}")
+            stop()
+            return null
+        }
+        onLog("✔ 60 FPS OpenGL H.264 Bridge aktif (${width}x${height} @ ${fps}fps, ${bitrate / 1000} kbps CBR, KeyInt=6).")
+        return decoderInputSurface
     }
 
     /**
-     * Meminta encoder menghasilkan IDR KeyFrame secepatnya (ketika cluster mengirim Msg 11).
+     * Mode 2: Mulai pipeline 60 FPS OpenGL Screen Mirroring (`VirtualDisplay` -> `SurfaceTexture` -> `EglSurfaceCropper` -> `MediaCodec`).
      */
-    fun requestKeyFrame() {
-        if (!isRunning) return
-        try {
-            val params = Bundle().apply {
-                putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
-            }
-            mediaCodec?.setParameters(params)
-        } catch (_: Exception) {}
-    }
+    fun start(mediaProjection: MediaProjection) {
+        if (isRunning.get()) return
+        val readyLatch = CountDownLatch(1)
+        var startupError: Throwable? = null
 
-    private fun drainEncoderLoop() {
-        val bufferInfo = MediaCodec.BufferInfo()
-        var scratchBuf = ByteArray(65536)
-
-        while (isRunning) {
-            val codec = mediaCodec ?: break
-            try {
-                val outIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000L)
-                when {
-                    outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                        val newFormat = codec.outputFormat
-                        // Ambil csd-0 (SPS) dan csd-1 (PPS) dari format output jika tersedia
-                        newFormat.getByteBuffer("csd-0")?.let { csd0 ->
-                            val bytes = ByteArray(csd0.remaining())
-                            csd0.get(bytes)
-                            naluSanitizer.processAnnexB(bytes, 0, bytes.size)
-                        }
-                        newFormat.getByteBuffer("csd-1")?.let { csd1 ->
-                            val bytes = ByteArray(csd1.remaining())
-                            csd1.get(bytes)
-                            naluSanitizer.processAnnexB(bytes, 0, bytes.size)
-                        }
-                    }
-                    outIndex >= 0 -> {
-                        val encodedBuffer = codec.getOutputBuffer(outIndex)
-                        if (encodedBuffer != null && bufferInfo.size > 0) {
-                            encodedBuffer.position(bufferInfo.offset)
-                            encodedBuffer.limit(bufferInfo.offset + bufferInfo.size)
-
-                            if (scratchBuf.size < bufferInfo.size) {
-                                scratchBuf = ByteArray(bufferInfo.size + 8192)
-                            }
-                            encodedBuffer.get(scratchBuf, 0, bufferInfo.size)
-
-                            // Sanitasi NALU (4-byte start code, strip SEI/AUD, gabung SPS+PPS+IDR)
-                            naluSanitizer.processAnnexB(scratchBuf, 0, bufferInfo.size)
-                        }
-                        codec.releaseOutputBuffer(outIndex, false)
-                    }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            mediaProjection.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() {
+                    onLog("MediaProjection dihentikan oleh sistem.")
+                    stop()
                 }
-            } catch (e: Exception) {
-                if (isRunning) {
-                    onLog("⚠ Encoder loop warning: ${e.message}")
+            }, null)
+        }
+
+        isRunning.set(true)
+        encoderThread = Thread({
+            runGlEncoderLoop(
+                sourceWidth = width,
+                sourceHeight = height,
+                cropX = 1.0f,
+                cropY = 1.0f,
+                mediaProjection = mediaProjection,
+                onReady = { readyLatch.countDown() },
+                onError = { err ->
+                    startupError = err
+                    readyLatch.countDown()
                 }
-                break
-            }
+            )
+        }, "UMOX-ScreenEncoder60").apply {
+            priority = Thread.MAX_PRIORITY
+            start()
+        }
+
+        readyLatch.await(3500, TimeUnit.MILLISECONDS)
+        if (startupError != null) {
+            onLog("✖ Gagal memulai Screen Encoder: ${startupError?.message}")
+            stop()
+        } else {
+            onLog("✔ 60 FPS Zero-Lag Screen Encoder aktif (${width}x${height} @ ${fps}fps, ${bitrate / 1000} kbps CBR, KeyInt=6).")
         }
     }
 
+    fun requestKeyFrame() {
+        forceKeyFrameRequested.set(true)
+    }
+
+    private fun runGlEncoderLoop(
+        sourceWidth: Int,
+        sourceHeight: Int,
+        cropX: Float,
+        cropY: Float,
+        mediaProjection: MediaProjection?,
+        onReady: () -> Unit,
+        onError: (Throwable) -> Unit
+    ) {
+        var codec: MediaCodec? = null
+        var encoderInputSurface: Surface? = null
+        var eglCropper: EglSurfaceCropper? = null
+        var captureSurfaceTexture: SurfaceTexture? = null
+        var captureSurface: Surface? = null
+        var callbackThread: HandlerThread? = null
+
+        try {
+            codec = createConfiguredEncoder()
+            encoderInputSurface = codec.createInputSurface()
+            codec.start()
+
+            eglCropper = EglSurfaceCropper(encoderInputSurface)
+
+            callbackThread = HandlerThread("UMOX-FrameAvailable").apply { start() }
+            val callbackHandler = Handler(callbackThread.looper)
+
+            captureSurfaceTexture = SurfaceTexture(eglCropper.oesTextureId).apply {
+                setDefaultBufferSize(sourceWidth, sourceHeight)
+                setOnFrameAvailableListener({
+                    pendingCaptureFrames.incrementAndGet()
+                }, callbackHandler)
+            }
+            captureSurface = Surface(captureSurfaceTexture)
+            decoderInputSurface = captureSurface
+
+            if (mediaProjection != null) {
+                virtualDisplay = mediaProjection.createVirtualDisplay(
+                    "UMOX-ClusterDisplay",
+                    sourceWidth,
+                    sourceHeight,
+                    dpi,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    captureSurface,
+                    null,
+                    null
+                )
+            }
+
+            onReady()
+
+            val bufferInfo = MediaCodec.BufferInfo()
+            val transformMatrix = FloatArray(16)
+            var hasReceivedFirstFrame = false
+            var renderedFrames = 0L
+            var lastKeyframeRenderedAt = 0L
+            var spsBytes = ByteArray(0)
+            var ppsBytes = ByteArray(0)
+
+            val frameIntervalNs = 1_000_000_000L / fps
+            var nextRenderTargetNs = SystemClock.elapsedRealtimeNanos()
+
+            while (isRunning.get()) {
+                val loopNowNs = SystemClock.elapsedRealtimeNanos()
+
+                // 1. Konsumsi frame baru dari SurfaceTexture jika tersedia
+                var pending = pendingCaptureFrames.getAndSet(0)
+                if (pending > 0) {
+                    do {
+                        captureSurfaceTexture.updateTexImage()
+                        capturedSourceFrames++
+                        pending--
+                    } while (pending > 0)
+                    captureSurfaceTexture.getTransformMatrix(transformMatrix)
+                    if (!hasReceivedFirstFrame) {
+                        hasReceivedFirstFrame = true
+                        onFirstSourceFrame?.invoke()
+                    }
+                }
+
+                // 2. Pacing 60 FPS (render frame baru atau ulangi frame terakhir setiap 16.67ms)
+                val nowNs = SystemClock.elapsedRealtimeNanos()
+                if (hasReceivedFirstFrame && nowNs >= nextRenderTargetNs) {
+                    // Advance target waktu 60Hz (seperti `z8.java` di WayXAuto)
+                    nextRenderTargetNs += frameIntervalNs
+                    if (nextRenderTargetNs <= nowNs) {
+                        nextRenderTargetNs += (((nowNs - nextRenderTargetNs) / frameIntervalNs) + 1L) * frameIntervalNs
+                    }
+
+                    // Paksa KeyFrame setiap 6 frame (`qt.e` di WayXAuto) atau saat diminta cluster
+                    val needSync = forceKeyFrameRequested.getAndSet(false) ||
+                        renderedFrames == 0L ||
+                        (renderedFrames - lastKeyframeRenderedAt) >= 6L
+
+                    if (needSync) {
+                        try {
+                            val syncBundle = Bundle().apply {
+                                putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+                            }
+                            codec.setParameters(syncBundle)
+                            lastKeyframeRenderedAt = renderedFrames
+                        } catch (_: Exception) {}
+                    }
+
+                    eglCropper.renderToEncoder(transformMatrix, cropX, cropY, nowNs)
+                    eglCropper.renderToPreviewIfAttached(transformMatrix, cropX, cropY, nowNs)
+                    renderedFrames++
+                }
+
+                // 3. Kuras (drain) output MediaCodec secara non-blocking (seperti `g.java` di WayXAuto)
+                while (isRunning.get()) {
+                    val outIdx = codec.dequeueOutputBuffer(bufferInfo, 0L)
+                    if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                        break
+                    } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        val outFmt = codec.outputFormat
+                        val csd0 = outFmt.getByteBuffer("csd-0")?.let { buf ->
+                            ByteArray(buf.remaining()).also { buf.get(it) }
+                        } ?: ByteArray(0)
+                        val csd1 = outFmt.getByteBuffer("csd-1")?.let { buf ->
+                            ByteArray(buf.remaining()).also { buf.get(it) }
+                        } ?: ByteArray(0)
+
+                        val extractedSps = extractNaluByType(7, csd0)
+                        val extractedPps = extractNaluByType(8, if (csd1.isNotEmpty()) csd1 else csd0)
+                        if (extractedSps.isNotEmpty()) spsBytes = extractedSps
+                        if (extractedPps.isNotEmpty()) ppsBytes = extractedPps
+                    } else if (outIdx >= 0) {
+                        val outBuf = codec.getOutputBuffer(outIdx)
+                        if (outBuf != null && bufferInfo.size > 0) {
+                            outBuf.position(bufferInfo.offset)
+                            outBuf.limit(bufferInfo.offset + bufferInfo.size)
+                            val rawBytes = ByteArray(bufferInfo.size)
+                            outBuf.get(rawBytes)
+
+                            if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                                val sps = extractNaluByType(7, rawBytes)
+                                val pps = extractNaluByType(8, rawBytes)
+                                if (sps.isNotEmpty()) spsBytes = sps
+                                if (pps.isNotEmpty()) ppsBytes = pps
+                            } else {
+                                // Pastikan SPS/PPS terekstrak jika disisipkan inline oleh hardware encoder
+                                val inlineSps = extractNaluByType(7, rawBytes)
+                                val inlinePps = extractNaluByType(8, rawBytes)
+                                if (inlineSps.isNotEmpty()) spsBytes = inlineSps
+                                if (inlinePps.isNotEmpty()) ppsBytes = inlinePps
+
+                                val isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0 ||
+                                    containsNaluType(5, rawBytes)
+                                val normalizedSlice = normalizeAnnexBNalus(rawBytes)
+                                if (normalizedSlice.isNotEmpty()) {
+                                    encodedOutputFrames++
+                                    onFrameEncoded(
+                                        EncodedVideoFrame(
+                                            annexBSlice = normalizedSlice,
+                                            isKeyFrame = isKeyFrame,
+                                            presentationTimeUs = bufferInfo.presentationTimeUs,
+                                            sps = spsBytes,
+                                            pps = ppsBytes
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                        codec.releaseOutputBuffer(outIdx, false)
+                    } else {
+                        break
+                    }
+                }
+
+                // 4. Park singkat (maks 2ms) jika belum waktunya frame berikutnya & tidak ada frame baru
+                if (pendingCaptureFrames.get() == 0) {
+                    val waitNs = if (hasReceivedFirstFrame) {
+                        (nextRenderTargetNs - SystemClock.elapsedRealtimeNanos()).coerceIn(250_000L, 2_000_000L)
+                    } else {
+                        2_000_000L
+                    }
+                    LockSupport.parkNanos(waitNs)
+                }
+            }
+        } catch (t: Throwable) {
+            if (decoderInputSurface == null) {
+                onError(t)
+            } else if (isRunning.get()) {
+                onLog("⚠ GL Encoder loop terhenti: ${t.message}")
+            }
+        } finally {
+            decoderInputSurface = null
+            try {
+                virtualDisplay?.release()
+            } catch (_: Exception) {}
+            virtualDisplay = null
+
+            try {
+                captureSurface?.release()
+            } catch (_: Exception) {}
+            try {
+                captureSurfaceTexture?.setOnFrameAvailableListener(null)
+                captureSurfaceTexture?.release()
+            } catch (_: Exception) {}
+            try {
+                callbackThread?.quitSafely()
+            } catch (_: Exception) {}
+            try {
+                eglCropper?.release()
+            } catch (_: Exception) {}
+            try {
+                codec?.stop()
+            } catch (_: Exception) {}
+            try {
+                codec?.release()
+            } catch (_: Exception) {}
+            try {
+                encoderInputSurface?.release()
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun createConfiguredEncoder(): MediaCodec {
+        val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+            setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
+            setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
+            setInteger(MediaFormat.KEY_PRIORITY, 0)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+            }
+        }
+        try {
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        } catch (_: Exception) {
+            // Fallback jika device menolak profil eksplisit
+            val fallbackFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+                setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+                setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+            }
+            codec.configure(fallbackFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        }
+        return codec
+    }
+
     fun stop() {
-        isRunning = false
-        try {
-            encoderThread?.join(400)
-        } catch (_: Exception) {}
+        isRunning.set(false)
+        val t = encoderThread
         encoderThread = null
+        if (t != null) {
+            LockSupport.unpark(t)
+            try {
+                t.join(800)
+            } catch (_: Exception) {}
+        }
+    }
 
-        try {
-            virtualDisplay?.release()
-        } catch (_: Exception) {}
-        virtualDisplay = null
+    companion object {
+        /**
+         * Memecah buffer H.264 (baik Annex-B maupun AVC 4-byte length) menjadi daftar NALU tanpa start code (`r5.d`).
+         */
+        fun splitNalus(data: ByteArray): List<ByteArray> {
+            val result = ArrayList<ByteArray>()
+            if (data.isEmpty()) return result
 
-        try {
-            mediaCodec?.stop()
-        } catch (_: Exception) {}
-        try {
-            mediaCodec?.release()
-        } catch (_: Exception) {}
-        mediaCodec = null
+            if (startCodeLengthAt(0, data) > 0) {
+                var i = 0
+                while (i < data.size) {
+                    val scLen = startCodeLengthAt(i, data)
+                    val naluStart = i + scLen
+                    i = naluStart
+                    while (i < data.size && startCodeLengthAt(i, data) == 0) {
+                        i++
+                    }
+                    if (i > naluStart) {
+                        result.add(data.copyOfRange(naluStart, i))
+                    }
+                }
+            } else {
+                var i = 0
+                while (i + 4 <= data.size) {
+                    val len = ((data[i].toInt() and 0xFF) shl 24) or
+                        ((data[i + 1].toInt() and 0xFF) shl 16) or
+                        ((data[i + 2].toInt() and 0xFF) shl 8) or
+                        (data[i + 3].toInt() and 0xFF)
+                    i += 4
+                    if (len in 1..(data.size - i)) {
+                        result.add(data.copyOfRange(i, i + len))
+                        i += len
+                    } else {
+                        break
+                    }
+                }
+            }
+            return result
+        }
 
-        try {
-            inputSurface?.release()
-        } catch (_: Exception) {}
-        inputSurface = null
+        /**
+         * Mengekstrak NALU tipe tertentu (misal 7=SPS, 8=PPS) dengan awalan `00 00 00 01` (`r5.e`).
+         */
+        fun extractNaluByType(naluType: Int, data: ByteArray): ByteArray {
+            for (nalu in splitNalus(data)) {
+                if (nalu.isNotEmpty() && (nalu[0].toInt() and 0x1F) == naluType) {
+                    val out = ByteArray(4 + nalu.size)
+                    out[3] = 1
+                    System.arraycopy(nalu, 0, out, 4, nalu.size)
+                    return out
+                }
+            }
+            return ByteArray(0)
+        }
+
+        fun containsNaluType(naluType: Int, data: ByteArray): Boolean {
+            for (nalu in splitNalus(data)) {
+                if (nalu.isNotEmpty() && (nalu[0].toInt() and 0x1F) == naluType) {
+                    return true
+                }
+            }
+            return false
+        }
+
+        /**
+         * Menormalisasi seluruh NALU di dalam buffer agar masing-masing diawali `00 00 00 01` (`r5.a`).
+         */
+        fun normalizeAnnexBNalus(data: ByteArray): ByteArray {
+            val out = ByteArrayOutputStream(data.size + 16)
+            for (nalu in splitNalus(data)) {
+                if (nalu.isEmpty()) continue
+                out.write(0)
+                out.write(0)
+                out.write(0)
+                out.write(1)
+                out.write(nalu, 0, nalu.size)
+            }
+            return out.toByteArray()
+        }
+
+        private fun startCodeLengthAt(idx: Int, data: ByteArray): Int {
+            if (idx + 2 < data.size && data[idx] == 0.toByte() && data[idx + 1] == 0.toByte()) {
+                if (data[idx + 2] == 1.toByte()) return 3
+                if (idx + 3 < data.size && data[idx + 2] == 0.toByte() && data[idx + 3] == 1.toByte()) return 4
+            }
+            return 0
+        }
     }
 }

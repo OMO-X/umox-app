@@ -1,6 +1,7 @@
 package com.umox.app
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -10,13 +11,18 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.SurfaceTexture
 import android.media.projection.MediaProjectionManager
 import android.net.ConnectivityManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.MotionEvent
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -27,6 +33,7 @@ import com.umox.app.ble.BleSniffer
 import com.umox.app.ble.GattExplorer
 import com.umox.app.config.AppConfig
 import com.umox.app.databinding.ActivityMainBinding
+import com.umox.app.stream.OmowayViewportConfig
 import com.umox.app.stream.ScreenCastService
 import com.umox.app.stream.SocketStreamer
 import com.umox.app.stream.StreamMode
@@ -49,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private var extractedPass: String = "12345678"
     private val discoveredBleDevices = mutableMapOf<String, BleDeviceItem>()
     private var hasAutoConnectedBle = false
+    private var activePreviewSurface: Surface? = null
 
     @Volatile
     private var isAaServerListening: Boolean = false
@@ -65,7 +73,7 @@ class MainActivity : AppCompatActivity() {
             if (!isTickerRunning) return
             probeAaServerAsync()
             refreshDashboardState()
-            uiHandler.postDelayed(this, 1200L)
+            uiHandler.postDelayed(this, 800L)
         }
     }
 
@@ -94,11 +102,17 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
         AppConfig.loadFromPreferences(this)
         initManagers()
+        setupLivePreviewTexture()
         setupClickListeners()
         checkAndRequestPermissions()
 
@@ -122,6 +136,49 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         isTickerRunning = false
         uiHandler.removeCallbacks(statusTicker)
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupLivePreviewTexture() {
+        binding.textureLivePreview.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+                OmowayViewportConfig.attachPreview(surfaceTexture, width, height)
+            }
+
+            override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+                OmowayViewportConfig.attachPreview(surfaceTexture, width, height)
+            }
+
+            override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
+                return OmowayViewportConfig.detachPreview(surfaceTexture)
+            }
+
+            override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {}
+        }
+
+        binding.textureLivePreview.setOnTouchListener { view, event ->
+            val receiver = ScreenCastService.activeAaReceiver
+            if (receiver != null && view.width > 0 && view.height > 0) {
+                val normX = (event.x / view.width.toFloat()).coerceIn(0f, 1f)
+                val normY = (event.y / view.height.toFloat()).coerceIn(0f, 1f)
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        view.parent?.requestDisallowInterceptTouchEvent(true)
+                        receiver.sendTouch(normX, normY, 0)
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        receiver.sendTouch(normX, normY, 2)
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        view.parent?.requestDisallowInterceptTouchEvent(false)
+                        receiver.sendTouch(normX, normY, 1)
+                    }
+                }
+                true
+            } else {
+                false
+            }
+        }
     }
 
     private fun initManagers() {
@@ -232,18 +289,42 @@ class MainActivity : AppCompatActivity() {
             wifiP2pProbe.connectToMotor()
         }
 
-        // Primary CTA: Mulai Android Auto
+        // Primary CTA: Mulai / Restart Android Auto 60 FPS
         binding.btnStartAndroidAuto.setOnClickListener {
-            if (ScreenCastService.isStreamingActive) {
-                stopCastService()
-            } else {
-                startAndroidAutoService()
-            }
+            startAndroidAutoService()
         }
 
         // Stop Streaming
         binding.btnStopCast.setOnClickListener {
             stopCastService()
+        }
+
+        // Rotary Knob Controls (seperti knob stang motor & WayXAuto)
+        binding.btnRotaryPrev.setOnClickListener {
+            val receiver = ScreenCastService.activeAaReceiver
+            if (receiver != null) {
+                receiver.sendRotary(-1)
+            } else {
+                Toast.makeText(this, "Mulai Android Auto terlebih dahulu", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        binding.btnRotarySelect.setOnClickListener {
+            val receiver = ScreenCastService.activeAaReceiver
+            if (receiver != null) {
+                receiver.sendKey(AaHeadlessReceiver.KEYCODE_DPAD_CENTER)
+            } else {
+                Toast.makeText(this, "Mulai Android Auto terlebih dahulu", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        binding.btnRotaryNext.setOnClickListener {
+            val receiver = ScreenCastService.activeAaReceiver
+            if (receiver != null) {
+                receiver.sendRotary(1)
+            } else {
+                Toast.makeText(this, "Mulai Android Auto terlebih dahulu", Toast.LENGTH_SHORT).show()
+            }
         }
 
         // Remote Bar untuk Android Auto
@@ -324,7 +405,7 @@ class MainActivity : AppCompatActivity() {
             appendLog("✔ Binding jaringan direset.")
         }
 
-        // Kontrol Polling & Кueri BLE
+        // Kontrol Polling & Kueri BLE
         binding.btnUnlockBike.setOnClickListener {
             gattExplorer.sendPollRequest()
             appendLog("⚡ Meminta sinkronisasi telemetri BLE motor...")
@@ -406,11 +487,19 @@ class MainActivity : AppCompatActivity() {
     private fun refreshDashboardState() {
         val isStreaming = ScreenCastService.isStreamingActive
         val mode = ScreenCastService.currentMode
-        val fps = SocketStreamer.currentFps
-        val kbps = SocketStreamer.currentKbps
+        val clusterConnected = ScreenCastService.isClusterVideoConnected
+        val netFps = SocketStreamer.currentFps
+        val netKbps = SocketStreamer.currentKbps
+        val encFps = ScreenCastService.localEncodedFps
+        val encKbps = ScreenCastService.localEncodedKbps
+        val totalFrames = ScreenCastService.totalEncodedFrames
+        val totalIdr = ScreenCastService.totalKeyFrames
+
+        val displayFps = if (clusterConnected && netFps > 0) netFps else encFps
+        val displayKbps = if (clusterConnected && netKbps > 0) netKbps else encKbps
 
         // 1. Update Step 1 (Server AA 5277)
-        val aaReady = isAaServerListening || (isStreaming && mode == StreamMode.ANDROID_AUTO)
+        val aaReady = isAaServerListening || (isStreaming && mode == StreamMode.ANDROID_AUTO && totalFrames > 0)
         binding.dotStepAa.backgroundTintList = ColorStateList.valueOf(
             Color.parseColor(if (aaReady) "#00E676" else "#FFB300")
         )
@@ -424,17 +513,35 @@ class MainActivity : AppCompatActivity() {
         )
 
         // 2. Update Step 2 (Motor BLE + Wi-Fi 192.168.2.1)
-        val motorReady = isMotorNetworkReady || wifiP2pProbe.isGroupConnected
+        val motorReady = isMotorNetworkReady || wifiP2pProbe.isGroupConnected || clusterConnected
         binding.dotStepMotor.backgroundTintList = ColorStateList.valueOf(
             Color.parseColor(if (motorReady) "#00E676" else "#00E5FF")
         )
-        binding.tvStepMotorStatus.text = if (motorReady) {
-            "✔ Terhubung ke $extractedSsid (192.168.2.1)"
+        binding.tvStepMotorStatus.text = if (clusterConnected) {
+            "✔ Terhubung ke Speedometer Omoway (192.168.2.1:9528)"
+        } else if (motorReady) {
+            "✔ Jaringan Motor Siap ($extractedSsid • 192.168.2.1)"
         } else {
-            "Target: $extractedSsid • Tekan 'Auto-Link' untuk sambung"
+            "Target: $extractedSsid • Auto-reconnect latar belakang aktif"
         }
 
-        // 3. Update Step 3 & Top Badges
+        // 3. Update Live Preview Placeholder & HUD Overlay
+        if (isStreaming && totalFrames > 0) {
+            binding.layoutPreviewPlaceholder.visibility = View.GONE
+            binding.tvPreviewHudOverlay.text =
+                "LIVE $displayFps FPS • $displayKbps kbps • IDR #$totalIdr"
+            binding.tvPreviewHudOverlay.setTextColor(Color.parseColor("#00E676"))
+        } else if (isStreaming) {
+            binding.layoutPreviewPlaceholder.visibility = View.VISIBLE
+            binding.tvPreviewHudOverlay.text = "MENYIAPKAN PIPELINE 60 FPS..."
+            binding.tvPreviewHudOverlay.setTextColor(Color.parseColor("#FFB300"))
+        } else {
+            binding.layoutPreviewPlaceholder.visibility = View.VISIBLE
+            binding.tvPreviewHudOverlay.text = "960×360 • 60Hz GOP-6"
+            binding.tvPreviewHudOverlay.setTextColor(Color.parseColor("#00E5FF"))
+        }
+
+        // 4. Update Step 3 & Top Badges
         if (isStreaming) {
             binding.dotStepStream.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#00E676"))
             val modeLabel = when (mode) {
@@ -445,26 +552,35 @@ class MainActivity : AppCompatActivity() {
             }
             binding.tvConnectionBadge.text = "● LIVE: $modeLabel"
             binding.tvConnectionBadge.setTextColor(Color.parseColor("#00E676"))
-            binding.tvStreamStatsBadge.text = "960×360 • $fps FPS • ${kbps} kbps"
+            binding.tvStreamStatsBadge.text = "960×360 • $displayFps FPS • $displayKbps kbps"
             binding.tvStreamStatsBadge.setTextColor(Color.parseColor("#00E5FF"))
-            binding.tvStepStreamStatus.text = "★ Transmisi Aktif ($fps FPS • ${kbps} kbps ke Port 9528)"
+
+            binding.tvStepStreamStatus.text = if (clusterConnected) {
+                "★ Transmisi Cluster Aktif ($netFps FPS • $netKbps kbps ke Port 9528)"
+            } else {
+                "★ Encoder Lokal Aktif ($encFps FPS • $encKbps kbps) • Menunggu Cluster 192.168.2.1..."
+            }
             binding.tvStepStreamStatus.setTextColor(Color.parseColor("#00E676"))
 
             binding.btnStopCast.visibility = View.VISIBLE
-            binding.btnStartAndroidAuto.text = "🔄  RESTART ANDROID AUTO"
+            binding.btnStartAndroidAuto.text = if (mode == StreamMode.ANDROID_AUTO) {
+                "🔄  RESTART ANDROID AUTO (60 FPS)"
+            } else {
+                "🚀  BERALIH KE ANDROID AUTO (60 FPS)"
+            }
         } else {
             binding.dotStepStream.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#4B5563"))
             binding.tvConnectionBadge.text = if (motorReady) "● P2P SIAP" else "● SIAGA"
             binding.tvConnectionBadge.setTextColor(
                 Color.parseColor(if (motorReady) "#00E676" else "#00E5FF")
             )
-            binding.tvStreamStatsBadge.text = "960×360 • 30 FPS CBR"
+            binding.tvStreamStatsBadge.text = "960×360 • 60 FPS ZERO-DELAY"
             binding.tvStreamStatsBadge.setTextColor(Color.parseColor("#8B949E"))
-            binding.tvStepStreamStatus.text = "Siaga • Menunggu instruksi mulai"
+            binding.tvStepStreamStatus.text = "Siaga • Tekan Mulai untuk menjalankan pipeline 60 FPS"
             binding.tvStepStreamStatus.setTextColor(Color.parseColor("#8B949E"))
 
             binding.btnStopCast.visibility = View.GONE
-            binding.btnStartAndroidAuto.text = "🚀  MULAI ANDROID AUTO"
+            binding.btnStartAndroidAuto.text = "🚀  MULAI ANDROID AUTO (60 FPS)"
         }
     }
 
@@ -571,7 +687,10 @@ class MainActivity : AppCompatActivity() {
         val line = "[$time] $message\n"
         binding.tvConsoleLog.append(line)
         binding.scrollConsole.post {
-            binding.scrollConsole.fullScroll(View.FOCUS_DOWN)
+            val delta = binding.tvConsoleLog.bottom - (binding.scrollConsole.height + binding.scrollConsole.scrollY)
+            if (delta > 0) {
+                binding.scrollConsole.scrollBy(0, delta)
+            }
         }
     }
 
@@ -580,9 +699,10 @@ class MainActivity : AppCompatActivity() {
         isTickerRunning = false
         uiHandler.removeCallbacks(statusTicker)
         probeExecutor.shutdownNow()
+        activePreviewSurface?.release()
+        activePreviewSurface = null
         bleSniffer.stopScan()
         gattExplorer.disconnect()
         wifiP2pProbe.unregister()
     }
 }
-
