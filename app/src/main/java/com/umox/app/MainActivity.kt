@@ -21,6 +21,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
@@ -179,6 +180,107 @@ class MainActivity : AppCompatActivity() {
         // Lepas sementara target render preview saat layar mati / masuk background
         // agar eglSwapBuffers pada TextureView tidak pernah menahan encoder 60 FPS!
         OmowayViewportConfig.pausePreview(binding.textureLivePreview.surfaceTexture)
+    }
+
+    /**
+     * Menangkap input dari Remot Stang Bluetooth (HID Keyboard / Gamepad / Media Button / SilverFox)
+     * dan meneruskannya langsung ke kanal Rotary & Key Android Auto (`AaHeadlessReceiver`).
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val receiver = ScreenCastService.activeAaReceiver
+        if (receiver != null && ScreenCastService.isStreamingActive &&
+            ScreenCastService.currentMode == StreamMode.ANDROID_AUTO
+        ) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                when (event.keyCode) {
+                    KeyEvent.KEYCODE_DPAD_UP,
+                    KeyEvent.KEYCODE_PAGE_UP,
+                    KeyEvent.KEYCODE_BUTTON_L1 -> {
+                        receiver.sendRotary(-1)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_DOWN,
+                    KeyEvent.KEYCODE_PAGE_DOWN,
+                    KeyEvent.KEYCODE_BUTTON_R1 -> {
+                        receiver.sendRotary(1)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> {
+                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_DPAD_LEFT)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_DPAD_RIGHT)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_CENTER,
+                    KeyEvent.KEYCODE_ENTER,
+                    KeyEvent.KEYCODE_NUMPAD_ENTER,
+                    KeyEvent.KEYCODE_SPACE,
+                    KeyEvent.KEYCODE_BUTTON_A -> {
+                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_DPAD_CENTER)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_BUTTON_B,
+                    KeyEvent.KEYCODE_ESCAPE -> {
+                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_BACK)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                    KeyEvent.KEYCODE_MEDIA_PLAY,
+                    KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_MEDIA_PLAY_PAUSE)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_MEDIA_NEXT)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_MEDIA_PREVIOUS)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_M,
+                    KeyEvent.KEYCODE_BUTTON_X -> {
+                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_NAVIGATION)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_N,
+                    KeyEvent.KEYCODE_BUTTON_Y -> {
+                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_MUSIC)
+                        return true
+                    }
+                }
+            } else if (event.action == KeyEvent.ACTION_UP) {
+                when (event.keyCode) {
+                    KeyEvent.KEYCODE_DPAD_UP,
+                    KeyEvent.KEYCODE_PAGE_UP,
+                    KeyEvent.KEYCODE_BUTTON_L1,
+                    KeyEvent.KEYCODE_DPAD_DOWN,
+                    KeyEvent.KEYCODE_PAGE_DOWN,
+                    KeyEvent.KEYCODE_BUTTON_R1,
+                    KeyEvent.KEYCODE_DPAD_LEFT,
+                    KeyEvent.KEYCODE_DPAD_RIGHT,
+                    KeyEvent.KEYCODE_DPAD_CENTER,
+                    KeyEvent.KEYCODE_ENTER,
+                    KeyEvent.KEYCODE_NUMPAD_ENTER,
+                    KeyEvent.KEYCODE_SPACE,
+                    KeyEvent.KEYCODE_BUTTON_A,
+                    KeyEvent.KEYCODE_BUTTON_B,
+                    KeyEvent.KEYCODE_ESCAPE,
+                    KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                    KeyEvent.KEYCODE_MEDIA_PLAY,
+                    KeyEvent.KEYCODE_MEDIA_PAUSE,
+                    KeyEvent.KEYCODE_MEDIA_NEXT,
+                    KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+                    KeyEvent.KEYCODE_M,
+                    KeyEvent.KEYCODE_BUTTON_X,
+                    KeyEvent.KEYCODE_N,
+                    KeyEvent.KEYCODE_BUTTON_Y -> return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     @SuppressLint("ClickableViewAccessibility")
