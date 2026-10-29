@@ -3,6 +3,7 @@ package com.umox.app
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.ActivityManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ComponentName
@@ -14,10 +15,12 @@ import android.graphics.Color
 import android.graphics.SurfaceTexture
 import android.media.projection.MediaProjectionManager
 import android.net.ConnectivityManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
@@ -66,6 +69,12 @@ class MainActivity : AppCompatActivity() {
 
     @Volatile
     private var isMotorNetworkReady: Boolean = false
+
+    /**
+     * Pasangan `[packageName, label]` aplikasi kompetitor yang terinstal di HP
+     * (persis `tv.a` di WayXAuto-0.2.5: mendeteksi aplikasi OMOWAY resmi / WayXAuto yang bisa menahan sesi proyeksi motor).
+     */
+    private var competingAppPair: Pair<String, String>? = null
 
     private val uiHandler = Handler(Looper.getMainLooper())
     private val probeExecutor = Executors.newSingleThreadExecutor()
@@ -131,6 +140,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        detectCompetingApp()
         isTickerRunning = true
         uiHandler.post(statusTicker)
         if (binding.textureLivePreview.isAvailable) {
@@ -140,6 +150,24 @@ class MainActivity : AppCompatActivity() {
                     binding.textureLivePreview.width,
                     binding.textureLivePreview.height
                 )
+            }
+        }
+    }
+
+    private fun detectCompetingApp() {
+        val candidates = listOf(
+            "com.omoway.app.android" to "OMOWAY",
+            "com.omoway.app" to "OMOWAY",
+            "com.sdmv.wayxauto" to "WayXAuto",
+            "com.sdmv.wayxcast" to "WayXCast",
+            "com.codebros.omopoc" to "OMOWAY POC"
+        )
+        competingAppPair = candidates.firstOrNull { (pkg, _) ->
+            try {
+                packageManager.getPackageInfo(pkg, 0)
+                true
+            } catch (_: PackageManager.NameNotFoundException) {
+                false
             }
         }
     }
@@ -290,6 +318,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupClickListeners() {
+        // Info Kunci Publik Built-in (Google-Android-Reference RSA-2048 + X.509)
+        binding.tvAaBadge.setOnClickListener {
+            val msg = "🔑 Kunci Head Unit Publik (Google-Android-Reference RSA-2048 + X.509, berlaku s/d 2046) sudah tertanam 100% Built-in di UMOX. Tidak perlu unduh file dari GitHub!"
+            appendLog(msg)
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+        }
+
         // Langkah 1: Buka Pengaturan Server Unit Kepala Android Auto
         binding.btnOpenAaSettings.setOnClickListener {
             pendingAutoStartAaAfterSettings = true
@@ -303,6 +338,11 @@ class MainActivity : AppCompatActivity() {
             bleSniffer.startScan()
             wifiP2pProbe.registerAndListen()
             wifiP2pProbe.connectToMotor()
+        }
+
+        // Tombol Resolusi Konflik OMOWAY / Reopen Navigasi Motor (WayXAuto 0.2.5)
+        binding.btnResolveConflict.setOnClickListener {
+            resolveCompetingAppConflict()
         }
 
         // Primary CTA: Mulai / Restart Android Auto 60 FPS
@@ -528,29 +568,75 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun resolveCompetingAppConflict() {
+        if (!ScreenCastService.isHeadUnitBusy && ScreenCastService.needsBikeNavReopenHint) {
+            ScreenCastService.dismissBikeNavReopenHint()
+            return
+        }
+
+        val competing = competingAppPair
+        try {
+            val am = getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            listOf(
+                "com.omoway.app.android",
+                "com.omoway.app",
+                "com.sdmv.wayxauto",
+                "com.sdmv.wayxcast",
+                "com.codebros.omopoc"
+            ).forEach { pkg ->
+                try {
+                    am?.killBackgroundProcesses(pkg)
+                } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+
+        if (competing != null) {
+            try {
+                appendLog("🔧 Membuka Info Aplikasi ${competing.second} (${competing.first}) -> Ketuk 'Paksa Berhenti' (Force Stop).")
+                startActivity(
+                    Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.fromParts("package", competing.first, null)
+                    )
+                )
+                return
+            } catch (_: Exception) {}
+        }
+
+        Toast.makeText(
+            this,
+            "Buka Pengaturan HP -> Aplikasi -> Paksa Berhenti (Force Stop) aplikasi OMOWAY",
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
     private fun refreshDashboardState() {
         val isStreaming = ScreenCastService.isStreamingActive
         val mode = ScreenCastService.currentMode
         val clusterConnected = ScreenCastService.isClusterVideoConnected
+        val bikeProjecting = ScreenCastService.isBikeProjecting
+        val headUnitBusy = ScreenCastService.isHeadUnitBusy
+        val needsReopenHint = ScreenCastService.needsBikeNavReopenHint
         val netFps = SocketStreamer.currentFps
         val netKbps = SocketStreamer.currentKbps
         val encFps = ScreenCastService.localEncodedFps
         val encKbps = ScreenCastService.localEncodedKbps
         val totalFrames = ScreenCastService.totalEncodedFrames
         val totalIdr = ScreenCastService.totalKeyFrames
+        val totalSentFrames = SocketStreamer.totalFramesSentGlobal
 
-        val displayFps = if (clusterConnected && netFps > 0) netFps else encFps
-        val displayKbps = if (clusterConnected && netKbps > 0) netKbps else encKbps
+        val displayFps = if (bikeProjecting && netFps > 0) netFps else encFps
+        val displayKbps = if (bikeProjecting && netKbps > 0) netKbps else encKbps
 
-        // 1. Update Step 1 (Server AA 5277)
+        // 1. Update Step 1 (Server AA 5277 - Auto-Green begitu aktif!)
         val aaReady = isAaServerListening || (isStreaming && mode == StreamMode.ANDROID_AUTO && totalFrames > 0)
         binding.dotStepAa.backgroundTintList = ColorStateList.valueOf(
             Color.parseColor(if (aaReady) "#00E676" else "#FFB300")
         )
         binding.tvStepAaStatus.text = if (aaReady) {
-            "✔ Server Unit Kepala Aktif (127.0.0.1:5277)"
+            "✔ Server Unit Kepala Aktif (127.0.0.1:5277) · Kunci Built-in Siap"
         } else {
-            "Tekan 'Buka AA' -> Titik 3 -> Mulai server unit kepala"
+            "Ketuk 'Buka AA' → Titik 3 (⋮) → Mulai server unit kepala (otomatis hijau)"
         }
         binding.tvStepAaStatus.setTextColor(
             Color.parseColor(if (aaReady) "#00E676" else "#8B949E")
@@ -561,19 +647,58 @@ class MainActivity : AppCompatActivity() {
         binding.dotStepMotor.backgroundTintList = ColorStateList.valueOf(
             Color.parseColor(if (motorReady) "#00E676" else "#00E5FF")
         )
-        binding.tvStepMotorStatus.text = if (clusterConnected) {
-            "✔ Terhubung ke Speedometer Omoway (192.168.2.1:9528)"
+        binding.tvStepMotorStatus.text = if (bikeProjecting) {
+            "✔ Motor Menerima Gambar (192.168.2.1:9528 · $totalSentFrames frame)"
+        } else if (clusterConnected) {
+            "✔ Terhubung ke TCP Motor (Menunggu konfirmasi layar Navigasi motor...)"
         } else if (motorReady) {
             "✔ Jaringan Motor Siap ($extractedSsid • 192.168.2.1)"
         } else {
             "Target: $extractedSsid • Auto-reconnect latar belakang aktif"
         }
 
-        // 3. Update Live Preview Placeholder & HUD Overlay
+        // 3. Update Conflict Banner (OMOWAY App Conflict / Reopen Navigation Hint - WayXAuto 0.2.5)
+        val competing = competingAppPair
+        if (headUnitBusy) {
+            binding.layoutConflictBanner.visibility = View.VISIBLE
+            val appName = competing?.second ?: "OMOWAY"
+            binding.tvConflictTitle.text = "⚠ Motor Masih Menampilkan Aplikasi $appName?"
+            binding.tvConflictTitle.setTextColor(Color.parseColor("#FFB300"))
+            binding.tvConflictBody.text =
+                "Motor hanya dapat menampilkan 1 aplikasi HP dalam satu waktu, dan $appName mungkin masih menahan sesi proyeksi:\n" +
+                    "1. Ketuk tombol di bawah lalu pilih Paksa Berhenti (Force Stop).\n" +
+                    "2. Di layar motor Anda, tutup menu Navigasi lalu buka kembali."
+            binding.btnResolveConflict.visibility = View.VISIBLE
+            binding.btnResolveConflict.text = "Paksa Berhenti $appName (Force Stop)"
+        } else if (needsReopenHint && bikeProjecting) {
+            binding.layoutConflictBanner.visibility = View.VISIBLE
+            binding.tvConflictTitle.text = "✔ Gambar Terkirim · Buka Ulang Navigasi di Motor"
+            binding.tvConflictTitle.setTextColor(Color.parseColor("#00E676"))
+            binding.tvConflictBody.text =
+                "UMOX sedang mengirim video 60 FPS ke motor Anda. Jika layar motor masih menampilkan gambar aplikasi sebelumnya, tutup Navigasi di motor lalu buka kembali."
+            binding.btnResolveConflict.visibility = View.VISIBLE
+            binding.btnResolveConflict.text = "Selesai"
+        } else if (competing != null && !bikeProjecting) {
+            // Tampilkan pintasan cepat Force Stop apabila aplikasi kompetitor (OMOWAY/WayXAuto) terdeteksi di HP
+            binding.layoutConflictBanner.visibility = View.VISIBLE
+            binding.tvConflictTitle.text = "💡 Aplikasi ${competing.second} Terdeteksi di HP Ini"
+            binding.tvConflictTitle.setTextColor(Color.parseColor("#00E5FF"))
+            binding.tvConflictBody.text =
+                "Jika motor masih menampilkan ${competing.second}, paksa berhenti aplikasi tersebut lalu tutup & buka kembali menu Navigasi di motor."
+            binding.btnResolveConflict.visibility = View.VISIBLE
+            binding.btnResolveConflict.text = "Buka Info ${competing.second} (Force Stop)"
+        } else {
+            binding.layoutConflictBanner.visibility = View.GONE
+        }
+
+        // 4. Update Live Preview Placeholder & HUD Overlay
         if (isStreaming && totalFrames > 0) {
             binding.layoutPreviewPlaceholder.visibility = View.GONE
-            binding.tvPreviewHudOverlay.text =
-                "LIVE $displayFps FPS • $displayKbps kbps • IDR #$totalIdr"
+            binding.tvPreviewHudOverlay.text = if (bikeProjecting) {
+                "★ ON BIKE $displayFps FPS • $displayKbps kbps • IDR #$totalIdr"
+            } else {
+                "LIVE HP $displayFps FPS • $displayKbps kbps • IDR #$totalIdr"
+            }
             binding.tvPreviewHudOverlay.setTextColor(Color.parseColor("#00E676"))
         } else if (isStreaming) {
             binding.layoutPreviewPlaceholder.visibility = View.VISIBLE
@@ -585,26 +710,39 @@ class MainActivity : AppCompatActivity() {
             binding.tvPreviewHudOverlay.setTextColor(Color.parseColor("#00E5FF"))
         }
 
-        // 4. Update Step 3 & Top Badges
+        // 5. Update Step 3 & Top Badges
+        // Sesuai WayXAuto 0.2.5: "Android Auto Tampil di Motor" HANYA muncul setelah motor benar-benar menerima gambar (`bikeProjecting == true`)!
         if (isStreaming) {
-            binding.dotStepStream.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#00E676"))
+            binding.dotStepStream.backgroundTintList = ColorStateList.valueOf(
+                Color.parseColor(if (bikeProjecting) "#00E676" else "#00E5FF")
+            )
             val modeLabel = when (mode) {
                 StreamMode.ANDROID_AUTO -> "ANDROID AUTO"
                 StreamMode.SCREEN_MIRROR -> "MIRROR LAYAR"
                 StreamMode.TEST_PATTERN -> "TEST VIDEO"
                 StreamMode.IDLE -> "IDLE"
             }
-            binding.tvConnectionBadge.text = "● LIVE: $modeLabel"
-            binding.tvConnectionBadge.setTextColor(Color.parseColor("#00E676"))
+            binding.tvConnectionBadge.text = if (bikeProjecting) {
+                "★ TAMPIL DI MOTOR: $modeLabel"
+            } else {
+                "● LIVE DI HP: $modeLabel"
+            }
+            binding.tvConnectionBadge.setTextColor(
+                Color.parseColor(if (bikeProjecting) "#00E676" else "#00E5FF")
+            )
             binding.tvStreamStatsBadge.text = "960×360 • $displayFps FPS • $displayKbps kbps"
             binding.tvStreamStatsBadge.setTextColor(Color.parseColor("#00E5FF"))
 
-            binding.tvStepStreamStatus.text = if (clusterConnected) {
-                "★ Transmisi Cluster Aktif ($netFps FPS • $netKbps kbps ke Port 9528)"
+            binding.tvStepStreamStatus.text = if (bikeProjecting) {
+                "★ $modeLabel Tampil di Layar Motor ($netFps FPS • $netKbps kbps · $totalSentFrames frame)"
+            } else if (clusterConnected) {
+                "⚡ Soket 9527/9528 Terhubung · Menunggu Motor Menerima Gambar..."
             } else {
-                "★ Encoder Lokal Aktif ($encFps FPS • $encKbps kbps) • Menunggu Cluster 192.168.2.1..."
+                "★ Live di HP ($encFps FPS • $encKbps kbps) · Menunggu Wi-Fi Motor 192.168.2.1..."
             }
-            binding.tvStepStreamStatus.setTextColor(Color.parseColor("#00E676"))
+            binding.tvStepStreamStatus.setTextColor(
+                Color.parseColor(if (bikeProjecting) "#00E676" else "#00E5FF")
+            )
 
             binding.btnStopCast.visibility = View.VISIBLE
             binding.btnStartAndroidAuto.text = if (mode == StreamMode.ANDROID_AUTO) {

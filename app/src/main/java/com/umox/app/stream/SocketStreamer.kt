@@ -48,6 +48,7 @@ class SocketStreamer(
 
     private class QueuedPacket(
         val wireBytes: ByteArray,
+        val isKeyFrame: Boolean,
         val enqueuedAtNs: Long
     )
 
@@ -64,9 +65,23 @@ class SocketStreamer(
     @Volatile
     var isSinkReady: Boolean = true
 
+    /**
+     * Menjamin paket pertama yang dikirim ke Port 9528 selalu berupa IDR KeyFrame + SPS/PPS
+     * (persis `jiVar.b` pada `t.java` baris 439 di WayXAuto-0.2.5).
+     */
+    @Volatile
+    private var awaitingFirstKeyFrame: Boolean = true
+
+    @Volatile
+    private var isWritingToSocket: Boolean = false
+
+    @Volatile
+    private var writeStartNs: Long = 0L
+
     private val queueLock = Object()
     private val liveQueue = ArrayDeque<QueuedPacket>()
     private var senderThread: Thread? = null
+    private var watchdogThread: Thread? = null
 
     private var cachedSps = ByteArray(0)
     private var cachedPps = ByteArray(0)
@@ -93,6 +108,8 @@ class SocketStreamer(
             socket = s
             outputStream = s.getOutputStream()
             isConnected = true
+            awaitingFirstKeyFrame = true
+            isWritingToSocket = false
             frameCountWindow = 0
             byteCountWindow = 0L
             lastWindowTime = System.currentTimeMillis()
@@ -105,8 +122,12 @@ class SocketStreamer(
                 priority = Thread.MAX_PRIORITY
                 start()
             }
+            watchdogThread = Thread({ runWriteWatchdogLoop() }, "UMOX-VideoWriteWatchdog").apply {
+                isDaemon = true
+                start()
+            }
 
-            onLog("✔ Soket Video (Port $targetPort) terhubung [16KB Low-Latency + BoundedQueue 100ms].")
+            onLog("✔ Soket Video (Port $targetPort) terhubung [16KB Low-Latency + BoundedQueue 100ms + Watchdog 750ms].")
             onRequestKeyFrame?.invoke()
             true
         } catch (e: Exception) {
@@ -114,6 +135,16 @@ class SocketStreamer(
             isConnected = false
             false
         }
+    }
+
+    /**
+     * Membuka sink video setelah handshake kontrol Port 9527 siap, sekaligus mewajibkan
+     * frame pertama yang dikirim berupa IDR KeyFrame + SPS/PPS (`t.f()` di WayXAuto-0.2.5).
+     */
+    fun enableSink() {
+        awaitingFirstKeyFrame = true
+        isSinkReady = true
+        onRequestKeyFrame?.invoke()
     }
 
     /**
@@ -154,12 +185,13 @@ class SocketStreamer(
         var droppedStale = false
 
         synchronized(queueLock) {
-            liveQueue.addLast(QueuedPacket(packet, nowNs))
+            liveQueue.addLast(QueuedPacket(packet, isKey, nowNs))
             val oldest = liveQueue.peekFirst()
             if (liveQueue.size > MAX_QUEUE_FRAMES ||
                 (oldest != null && (nowNs - oldest.enqueuedAtNs) > MAX_QUEUE_AGE_NS)
             ) {
                 liveQueue.clear()
+                awaitingFirstKeyFrame = true
                 droppedStale = true
             } else {
                 queueLock.notifyAll()
@@ -214,14 +246,27 @@ class SocketStreamer(
                 synchronized(queueLock) {
                     liveQueue.clear()
                 }
+                awaitingFirstKeyFrame = true
                 onRequestKeyFrame?.invoke()
                 continue
             }
 
+            // Wajibkan paket pertama ke decoder motor berupa IDR KeyFrame + SPS/PPS (`jiVar.b` di t.java line 439)
+            if (awaitingFirstKeyFrame && !item.isKeyFrame) {
+                onRequestKeyFrame?.invoke()
+                continue
+            }
+            if (item.isKeyFrame) {
+                awaitingFirstKeyFrame = false
+            }
+
             try {
                 val out = outputStream ?: break
+                writeStartNs = SystemClock.elapsedRealtimeNanos()
+                isWritingToSocket = true
                 out.write(item.wireBytes)
                 out.flush()
+                isWritingToSocket = false
 
                 totalFramesSentGlobal++
                 frameCountWindow++
@@ -237,8 +282,29 @@ class SocketStreamer(
                     lastWindowTime = now
                 }
             } catch (e: Exception) {
+                isWritingToSocket = false
                 handleSocketError("Transmisi video terputus: ${e.message}")
                 break
+            }
+        }
+    }
+
+    /**
+     * Watchdog 750ms untuk mendeteksi soket TCP yang macet saat write (`omo-live-write-watchdog`
+     * pada `t.java` baris 354-366 di WayXAuto-0.2.5).
+     */
+    private fun runWriteWatchdogLoop() {
+        while (isConnected) {
+            try {
+                Thread.sleep(25L)
+            } catch (_: InterruptedException) {
+                return
+            }
+            if (!isConnected) return
+            if (isWritingToSocket && (SystemClock.elapsedRealtimeNanos() - writeStartNs) > 750_000_000L) {
+                isWritingToSocket = false
+                handleSocketError("Soket video tertahan >750 ms · merestart transmisi video")
+                return
             }
         }
     }
@@ -246,18 +312,23 @@ class SocketStreamer(
     private fun handleSocketError(reason: String) {
         if (!isConnected) return
         isConnected = false
+        isWritingToSocket = false
         currentFps = 0
         currentKbps = 0
         synchronized(queueLock) {
             liveQueue.clear()
             queueLock.notifyAll()
         }
+        try {
+            socket?.close()
+        } catch (_: Exception) {}
         onLog("⚠ Soket video ($targetPort) terputus: $reason")
         onConnectionLost?.invoke()
     }
 
     fun disconnect() {
         isConnected = false
+        isWritingToSocket = false
         currentFps = 0
         currentKbps = 0
         synchronized(queueLock) {
@@ -272,6 +343,12 @@ class SocketStreamer(
         } catch (_: Exception) {}
         outputStream = null
         socket = null
+
+        val w = watchdogThread
+        watchdogThread = null
+        if (w != null && w !== Thread.currentThread()) {
+            w.interrupt()
+        }
 
         val t = senderThread
         senderThread = null

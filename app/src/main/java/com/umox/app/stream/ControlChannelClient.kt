@@ -55,6 +55,13 @@ class ControlChannelClient(
 
     private val hasConfirmedReady = AtomicBoolean(false)
 
+    val isProjectionControlReady: Boolean
+        get() = hasConfirmedReady.get()
+
+    @Volatile
+    var connectedSinceElapsedMs: Long = 0L
+        private set
+
     @Volatile
     var isClusterDisplayShown: Boolean = false
         private set
@@ -95,6 +102,7 @@ class ControlChannelClient(
             inputStream = DataInputStream(s.getInputStream())
             isConnected = true
             hasConfirmedReady.set(false)
+            connectedSinceElapsedMs = SystemClock.elapsedRealtime()
             isClusterDisplayShown = false
             hasSeenShowConfirmation = false
 
@@ -122,6 +130,7 @@ class ControlChannelClient(
 
     private fun confirmReady() {
         if (hasConfirmedReady.compareAndSet(false, true)) {
+            onLog("★ Kontrol Proyeksi Motor Siap · Mengirim Ch 7, Msg 1 ({\"code\":0}) & memulai aliran video!")
             sendShowSignal()
             onShowRequested?.invoke()
             onKeyFrameRequested?.invoke()
@@ -173,6 +182,7 @@ class ControlChannelClient(
                         // Cluster mengonfirmasi layar proyeksi TAMPIL (`ki.java` line 19)
                         isClusterDisplayShown = true
                         hasSeenShowConfirmation = true
+                        confirmReady()
                         onShowRequested?.invoke()
                         onKeyFrameRequested?.invoke()
                     } else if (channelId == 7 && msgId == 11) {
@@ -194,6 +204,7 @@ class ControlChannelClient(
                                 msgId = 2,
                                 json = """{"msg_id":"DS_RESP_SHOW","result":0,"status":"STREAMING"}"""
                             )
+                            confirmReady()
                             sendShowSignal()
                             onShowRequested?.invoke()
                             onKeyFrameRequested?.invoke()

@@ -121,5 +121,24 @@ object WifiDirectNetworkBinder {
         socket.connect(InetSocketAddress(targetAddr, targetPort), connectTimeoutMs)
         return socket
     }
+
+    fun findLocalSubnetAddress(subnetPrefix: String = "192.168.2."): InetAddress? {
+        try {
+            val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
+            for (nif in interfaces) {
+                if (!nif.isUp || nif.isLoopback) continue
+                val addrs = Collections.list(nif.inetAddresses)
+                for (addr in addrs) {
+                    if (addr is Inet4Address) {
+                        val host = addr.hostAddress ?: continue
+                        if (host.startsWith(subnetPrefix)) {
+                            return addr
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return null
+    }
 }
 

@@ -88,6 +88,38 @@ class ScreenCastService : Service() {
         var isClusterCtrlConnected: Boolean = false
             private set
 
+        /**
+         * Bernilai `true` HANYA ketika motor sudah menerima handshake kontrol Port 9527 (ECDH Msg 49 / Ping Msg 9),
+         * menerima `Ch 7, Msg 1 ({"code":0})`, DAN frame video H.264 sudah diterima oleh Port 9528
+         * (persis `e0.n` / `bike_projecting` di WayXAuto-0.2.5).
+         */
+        @Volatile
+        var isBikeProjecting: Boolean = false
+            private set
+
+        /**
+         * Bernilai `true` apabila rute Wi-Fi Direct / TCP motor aktif namun dalam >= 8 detik
+         * motor belum merespons handshake proyeksi (karena ditahan aplikasi OMOWAY resmi / layar Navigasi motor belum dibuka)
+         * (persis `e0.o` / `head_unit_busy` di WayXAuto-0.2.5).
+         */
+        @Volatile
+        var isHeadUnitBusy: Boolean = false
+            private set
+
+        /**
+         * Bernilai `true` apabila sebelumnya sempat terjadi konflik (`isHeadUnitBusy`), lalu aliran video
+         * sudah berhasil masuk ke motor (`isBikeProjecting = true`), untuk mengingatkan pengguna menutup
+         * dan membuka ulang menu Navigasi di motor bila gambar belum berpindah.
+         */
+        @Volatile
+        var needsBikeNavReopenHint: Boolean = false
+            private set
+
+        fun dismissBikeNavReopenHint() {
+            needsBikeNavReopenHint = false
+            onStateChangedCallback?.invoke()
+        }
+
         @Volatile
         private var currentInstance: ScreenCastService? = null
 
@@ -322,6 +354,8 @@ class ScreenCastService : Service() {
             socketStreamer = SocketStreamer(applicationContext, targetIp, videoPort) { log(it) }.apply {
                 onConnectionLost = {
                     isClusterVideoConnected = false
+                    isBikeProjecting = false
+                    onStateChangedCallback?.invoke()
                 }
                 onRequestKeyFrame = {
                     mediaEncoder?.requestKeyFrame()
@@ -334,10 +368,11 @@ class ScreenCastService : Service() {
             controlChannelClient?.disconnect()
             controlChannelClient = ControlChannelClient(applicationContext, targetIp, ctrlPort) { log(it) }.apply {
                 onShowRequested = {
-                    log("★ Cluster siap menampilkan video (SHOW diterima).")
-                    socketStreamer?.isSinkReady = true
+                    log("★ Cluster siap menampilkan video (Handshake Kontrol & SHOW diterima).")
+                    socketStreamer?.enableSink()
                     mediaEncoder?.requestKeyFrame()
                     assetPlayer?.requestKeyFrame()
+                    onStateChangedCallback?.invoke()
                 }
                 onHideRequested = {
                     log("Cluster meminta HIDE.")
@@ -351,11 +386,21 @@ class ScreenCastService : Service() {
                     aaReceiver?.sendNightMode(isNight)
                     log("🌓 Sensor cahaya motor mengubah tema ke: ${if (isNight) "MALAM" else "SIANG"}")
                 }
+                onConnectionLost = {
+                    isClusterCtrlConnected = false
+                    isBikeProjecting = false
+                    onStateChangedCallback?.invoke()
+                }
             }
         }
 
         if (clusterMaintainJob?.isActive != true) {
             clusterMaintainJob = serviceScope.launch(Dispatchers.IO) {
+                var motorRouteSinceMs = 0L
+                var lastSentFramesSnapshot = SocketStreamer.totalFramesSentGlobal
+                var lastSentProgressMs = android.os.SystemClock.elapsedRealtime()
+                var hadBusyConflict = false
+
                 while (isActive && isStreamingActive) {
                     val ctrl = controlChannelClient
                     val sock = socketStreamer
@@ -363,10 +408,6 @@ class ScreenCastService : Service() {
                     if (ctrl != null && !ctrl.isConnected) {
                         val ok = ctrl.connect()
                         isClusterCtrlConnected = ok
-                        if (ok) {
-                            delay(250)
-                            ctrl.sendShowSignal()
-                        }
                     } else {
                         isClusterCtrlConnected = ctrl?.isConnected == true
                     }
@@ -375,7 +416,12 @@ class ScreenCastService : Service() {
                         val ok = sock.connect()
                         isClusterVideoConnected = ok
                         if (ok) {
-                            ctrl?.sendShowSignal()
+                            lastSentFramesSnapshot = SocketStreamer.totalFramesSentGlobal
+                            lastSentProgressMs = android.os.SystemClock.elapsedRealtime()
+                            if (ctrl?.isProjectionControlReady == true) {
+                                sock.enableSink()
+                                ctrl.sendShowSignal()
+                            }
                             mediaEncoder?.requestKeyFrame()
                             assetPlayer?.requestKeyFrame()
                         }
@@ -383,12 +429,64 @@ class ScreenCastService : Service() {
                         isClusterVideoConnected = sock?.isConnected == true
                     }
 
-                    delay(1800)
+                    val nowMs = android.os.SystemClock.elapsedRealtime()
+                    val currentSent = SocketStreamer.totalFramesSentGlobal
+                    if (currentSent > lastSentFramesSnapshot) {
+                        lastSentFramesSnapshot = currentSent
+                        lastSentProgressMs = nowMs
+                    }
+
+                    // Verifikasi `bike_projecting` (`e0.n` di WayXAuto-0.2.5):
+                    // Hanya bernilai true apabila Port 9527 sudah menyelesaikan handshake proyeksi DAN Port 9528 menerima frame!
+                    val projectingNow = isClusterCtrlConnected &&
+                        isClusterVideoConnected &&
+                        (ctrl?.isProjectionControlReady == true || currentSent > 0L)
+                    isBikeProjecting = projectingNow
+
+                    // Deteksi rute Wi-Fi Direct / TCP motor untuk `head_unit_busy` (`e0.o` di WayXAuto-0.2.5)
+                    val hasMotorRoute = isClusterCtrlConnected ||
+                        isClusterVideoConnected ||
+                        WifiDirectNetworkBinder.findLocalSubnetAddress("192.168.2.") != null
+
+                    if (!hasMotorRoute) {
+                        motorRouteSinceMs = 0L
+                        isHeadUnitBusy = false
+                    } else if (projectingNow) {
+                        motorRouteSinceMs = 0L
+                        if (isHeadUnitBusy || hadBusyConflict) {
+                            isHeadUnitBusy = false
+                            needsBikeNavReopenHint = true
+                        }
+                    } else {
+                        if (motorRouteSinceMs == 0L) {
+                            motorRouteSinceMs = nowMs
+                        } else if (nowMs - motorRouteSinceMs >= 8_000L && !isHeadUnitBusy) {
+                            isHeadUnitBusy = true
+                            hadBusyConflict = true
+                            log("⚠ Motor terdeteksi masih menahan sesi aplikasi OMOWAY (>8 detik tanpa respons proyeksi). Paksa berhenti aplikasi OMOWAY lalu buka ulang Navigasi di motor.")
+                        }
+                    }
+
+                    // Deteksi 8-detik frame stall (`head_unit_stalled` pada `o.java` line 152 di WayXAuto-0.2.5)
+                    if (isClusterVideoConnected && isClusterCtrlConnected && (nowMs - lastSentProgressMs >= 8_000L)) {
+                        log("⚠ Aliran video ke motor tertahan >8 detik (head_unit_stalled) · merestart soket 9527 & 9528...")
+                        lastSentProgressMs = nowMs
+                        sock?.disconnect()
+                        ctrl?.disconnect(sendHide = false)
+                        isClusterVideoConnected = false
+                        isClusterCtrlConnected = false
+                        isBikeProjecting = false
+                    }
+
+                    onStateChangedCallback?.invoke()
+                    delay(1000)
                 }
             }
         } else {
             // Memicu requestKeyFrame apabila soket sudah terhubung saat ganti mode
-            controlChannelClient?.sendShowSignal()
+            if (controlChannelClient?.isProjectionControlReady == true) {
+                controlChannelClient?.sendShowSignal()
+            }
             mediaEncoder?.requestKeyFrame()
             assetPlayer?.requestKeyFrame()
         }
@@ -426,6 +524,9 @@ class ScreenCastService : Service() {
         currentMode = StreamMode.IDLE
         isClusterVideoConnected = false
         isClusterCtrlConnected = false
+        isBikeProjecting = false
+        isHeadUnitBusy = false
+        needsBikeNavReopenHint = false
         clusterMaintainJob?.cancel()
         clusterMaintainJob = null
 

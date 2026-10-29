@@ -144,9 +144,11 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:background="@drawable/bg_glass_inner"
+                    android:clickable="true"
+                    android:focusable="true"
                     android:paddingHorizontal="10dp"
                     android:paddingVertical="4dp"
-                    android:text="H.264 CBR"
+                    android:text="🔑 KUNCI BUILT-IN ✓"
                     android:textColor="#00E676"
                     android:textSize="10sp"
                     android:textStyle="bold" />
@@ -276,7 +278,7 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="14dp"
+                android:layout_marginBottom="10dp"
                 android:background="@drawable/bg_glass_inner"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
@@ -313,6 +315,54 @@
                         android:textColor="#8B949E"
                         android:textSize="11sp" />
                 </LinearLayout>
+            </LinearLayout>
+
+            <!-- DETEKSI KONFLIK APLIKASI OMOWAY / PANDUAN REOPEN NAVIGASI MOTOR (WayXAuto 0.2.5) -->
+            <LinearLayout
+                android:id="@+id/layoutConflictBanner"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:background="@drawable/bg_glass_inner"
+                android:orientation="vertical"
+                android:padding="12dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/tvConflictTitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="⚠ Motor Masih Menampilkan Aplikasi OMOWAY?"
+                    android:textColor="#FFB300"
+                    android:textSize="12.5sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvConflictBody"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:lineSpacingExtra="2dp"
+                    android:text="1. Ketuk Paksa Berhenti OMOWAY di bawah.\n2. Di layar motor Anda, tutup menu Navigasi lalu buka kembali."
+                    android:textColor="#C9D1D9"
+                    android:textSize="11sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnResolveConflict"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="38dp"
+                    android:layout_marginTop="8dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="Paksa Berhenti OMOWAY (Force Stop)"
+                    android:textColor="#FFB300"
+                    android:textSize="11.5sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#2B1F11"
+                    app:cornerRadius="10dp"
+                    app:strokeColor="#5A3E1B"
+                    app:strokeWidth="1dp" />
             </LinearLayout>
 
             <!-- INTERACTIVE LIVE PREVIEW 960x360 (Sentuh Langsung untuk Kontrol Android Auto) -->
