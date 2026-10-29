@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -95,6 +96,7 @@ class ScreenCastService : Service() {
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private var mediaProjection: MediaProjection? = null
     private var aaReceiver: AaHeadlessReceiver? = null
     private var mediaEncoder: MediaEncoder? = null
@@ -465,7 +467,21 @@ class ScreenCastService : Service() {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "UMOX::StreamWakeLock").apply {
                 setReferenceCounted(false)
-                acquire(4 * 60 * 60 * 1000L)
+                acquire()
+            }
+        } catch (_: Exception) {}
+
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            @Suppress("DEPRECATION")
+            val lockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
+            wifiLock = wm.createWifiLock(lockMode, "UMOX::StreamWifiLock").apply {
+                setReferenceCounted(false)
+                acquire()
             }
         } catch (_: Exception) {}
     }
@@ -477,6 +493,13 @@ class ScreenCastService : Service() {
             }
         } catch (_: Exception) {}
         wakeLock = null
+
+        try {
+            if (wifiLock?.isHeld == true) {
+                wifiLock?.release()
+            }
+        } catch (_: Exception) {}
+        wifiLock = null
     }
 
     private fun log(message: String) {

@@ -133,12 +133,24 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         isTickerRunning = true
         uiHandler.post(statusTicker)
+        if (binding.textureLivePreview.isAvailable) {
+            binding.textureLivePreview.surfaceTexture?.let { st ->
+                OmowayViewportConfig.attachPreview(
+                    st,
+                    binding.textureLivePreview.width,
+                    binding.textureLivePreview.height
+                )
+            }
+        }
     }
 
     override fun onPause() {
         super.onPause()
         isTickerRunning = false
         uiHandler.removeCallbacks(statusTicker)
+        // Lepas sementara target render preview saat layar mati / masuk background
+        // agar eglSwapBuffers pada TextureView tidak pernah menahan encoder 60 FPS!
+        OmowayViewportConfig.pausePreview(binding.textureLivePreview.surfaceTexture)
     }
 
     @SuppressLint("ClickableViewAccessibility")

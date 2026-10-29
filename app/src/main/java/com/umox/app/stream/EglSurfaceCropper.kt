@@ -55,6 +55,19 @@ object OmowayViewportConfig {
         }
     }
 
+    /**
+     * Dipanggil saat layar HP dimatikan atau MainActivity masuk ke background (`onPause`/`onStop`),
+     * persis `x.java` lines 31-35 di WayXAuto agar `eglSwapBuffers` pada `TextureView` tidak pernah
+     * memblokir thread encoder 60 FPS ketika layar fisik HP mati (`SurfaceFlinger` berhenti).
+     */
+    fun pausePreview(surfaceTexture: SurfaceTexture?) {
+        synchronized(previewLock) {
+            if (surfaceTexture == null || previewSurfaceTexture === surfaceTexture) {
+                previewSurfaceTexture = null
+            }
+        }
+    }
+
     fun detachPreview(surfaceTexture: SurfaceTexture): Boolean {
         synchronized(previewLock) {
             if (previewSurfaceTexture === surfaceTexture) {
