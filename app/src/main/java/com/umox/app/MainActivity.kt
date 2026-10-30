@@ -259,27 +259,60 @@ class MainActivity : AppCompatActivity() {
                         receiver.sendKey(AaHeadlessReceiver.KEYCODE_BACK)
                         return true
                     }
+                    KeyEvent.KEYCODE_VOLUME_UP -> {
+                        if (AppConfig.joystickAsDpad) {
+                            // Routing Tombol Stang: Vol+ menjadi D-Pad ATAS / Rotary Scroll Up di Android Auto
+                            receiver.sendKey(AaHeadlessReceiver.KEYCODE_DPAD_UP)
+                            receiver.sendRotary(-1)
+                        } else {
+                            receiver.sendKey(AaHeadlessReceiver.KEYCODE_VOLUME_UP)
+                        }
+                        return true
+                    }
+                    KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                        if (AppConfig.joystickAsDpad) {
+                            // Routing Tombol Stang: Vol- menjadi D-Pad BAWAH / Rotary Scroll Down di Android Auto
+                            receiver.sendKey(AaHeadlessReceiver.KEYCODE_DPAD_DOWN)
+                            receiver.sendRotary(1)
+                        } else {
+                            receiver.sendKey(AaHeadlessReceiver.KEYCODE_VOLUME_DOWN)
+                        }
+                        return true
+                    }
+                    KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
+                        if (AppConfig.joystickAsDpad) {
+                            // Routing Tombol Stang: Prev menjadi D-Pad KIRI di Android Auto
+                            receiver.sendKey(AaHeadlessReceiver.KEYCODE_DPAD_LEFT)
+                        } else {
+                            receiver.sendKey(AaHeadlessReceiver.KEYCODE_MEDIA_PREVIOUS)
+                        }
+                        return true
+                    }
+                    KeyEvent.KEYCODE_MEDIA_NEXT -> {
+                        if (AppConfig.joystickAsDpad) {
+                            // Routing Tombol Stang: Next menjadi D-Pad KANAN di Android Auto
+                            receiver.sendKey(AaHeadlessReceiver.KEYCODE_DPAD_RIGHT)
+                        } else {
+                            receiver.sendKey(AaHeadlessReceiver.KEYCODE_MEDIA_NEXT)
+                        }
+                        return true
+                    }
                     KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
                     KeyEvent.KEYCODE_MEDIA_PLAY,
                     KeyEvent.KEYCODE_MEDIA_PAUSE,
                     KeyEvent.KEYCODE_HEADSETHOOK -> {
-                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_MEDIA_PLAY_PAUSE)
-                        return true
-                    }
-                    KeyEvent.KEYCODE_MEDIA_NEXT -> {
-                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_MEDIA_NEXT)
-                        return true
-                    }
-                    KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
-                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_MEDIA_PREVIOUS)
-                        return true
-                    }
-                    KeyEvent.KEYCODE_VOLUME_UP -> {
-                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_VOLUME_UP)
-                        return true
-                    }
-                    KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_VOLUME_DOWN)
+                        if (AppConfig.joystickAsDpad) {
+                            // Routing Tombol Stang: Play/Pause menjadi D-Pad SELECT (Tekan) dan BACK (Tahan Lama)
+                            if (event.repeatCount > 0) {
+                                if (event.repeatCount == 1) {
+                                    receiver.sendKey(AaHeadlessReceiver.KEYCODE_BACK)
+                                }
+                            } else {
+                                receiver.sendKey(AaHeadlessReceiver.KEYCODE_DPAD_CENTER)
+                            }
+                        } else {
+                            receiver.sendKey(AaHeadlessReceiver.KEYCODE_MEDIA_PLAY_PAUSE)
+                        }
                         return true
                     }
                     KeyEvent.KEYCODE_VOLUME_MUTE -> {
@@ -1201,6 +1234,20 @@ class MainActivity : AppCompatActivity() {
                 pendingAutoStartAaAfterSettings = true
                 openAndroidAutoHeadUnitServer()
             }
+        }
+
+        val modeLabel = if (AppConfig.joystickAsDpad) "🕹 D-Pad Navigasi AA (Aktif)" else "🎵 Musik Murni"
+        options.add("🕹️ Fungsi Tombol Stang: $modeLabel")
+        actions.add {
+            val newMode = !AppConfig.joystickAsDpad
+            AppConfig.setJoystickAsDpad(this, newMode)
+            val msg = if (newMode) {
+                "✔ Tombol stang diarahkan sebagai D-Pad Navigasi Android Auto!\n(Vol+=Atas, Vol-=Bawah, Prev=Kiri, Next=Kanan, Play=Select, Tahan Play=Back)"
+            } else {
+                "✔ Tombol stang dikembalikan ke fungsi Musik Murni."
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            appendLog(msg)
         }
 
         options.add("🔄 Ganti Mode Operasi (Standalone / Server / Client)")

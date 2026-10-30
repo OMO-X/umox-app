@@ -75,6 +75,12 @@ object AppConfig {
     var primaryPhoneBtName: String = ""
 
     /**
+     * Mengarahkan 5 tombol media joystick stang motor (Vol+, Vol-, Prev, Next, Play/Pause)
+     * menjadi D-Pad navigasi Android Auto (Atas, Bawah, Kiri, Kanan, Select).
+     */
+    var joystickAsDpad: Boolean = true
+
+    /**
      * Alamat IP gateway default cluster speedometer / headunit.
      */
     var defaultClusterIp: String = "192.168.2.1"
@@ -159,6 +165,16 @@ object AppConfig {
         OmowayViewportConfig.boostContrast = sp.getFloat("pref_boost_contrast", 1.32f)
         OmowayViewportConfig.boostGamma = sp.getFloat("pref_boost_gamma", 0.68f)
         OmowayViewportConfig.boostSaturation = sp.getFloat("pref_boost_saturation", 1.35f)
+
+        joystickAsDpad = sp.getBoolean("pref_joystick_as_dpad", true)
+    }
+
+    fun setJoystickAsDpad(context: Context, enabled: Boolean) {
+        joystickAsDpad = enabled
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("pref_joystick_as_dpad", enabled)
+            .apply()
     }
 
     /**
