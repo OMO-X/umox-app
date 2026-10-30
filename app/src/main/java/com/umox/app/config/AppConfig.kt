@@ -15,21 +15,64 @@ object AppConfig {
 
     private const val PREFS_NAME = "umox_prefs"
     private const val KEY_BLE_MAC = "pref_target_ble_mac"
+    private const val KEY_BLE_NAME = "pref_target_ble_name"
     private const val KEY_P2P_MAC = "pref_target_p2p_mac"
+    private const val KEY_P2P_NAME = "pref_target_p2p_name"
+    private const val KEY_APP_MODE = "pref_app_mode"
+    private const val KEY_SERVER_HOST = "pref_server_host"
+    private const val KEY_SERVER_NAME = "pref_server_name"
+    private const val KEY_HOTSPOT_SSID = "pref_hotspot_ssid"
+    private const val KEY_HOTSPOT_PASS = "pref_hotspot_pass"
+    private const val KEY_PRIMARY_PHONE_BT_MAC = "pref_primary_phone_bt_mac"
+    private const val KEY_PRIMARY_PHONE_BT_NAME = "pref_primary_phone_bt_name"
+
+    enum class AppMode {
+        STANDALONE,
+        SERVER,
+        CLIENT
+    }
+
+    /**
+     * Mode operasional aplikasi UMOX:
+     * - STANDALONE: 1 HP mandiri terhubung langsung ke motor.
+     * - SERVER: Berjalan di HP Utama (Host Android Auto & Radar Hotspot).
+     * - CLIENT: Berjalan di HP Layar Tambahan / HP Donor (Penerima Video & Streamer ke Motor).
+     */
+    var appMode: AppMode = AppMode.STANDALONE
+
+    /**
+     * Alamat host server Android Auto.
+     * Standalone: "127.0.0.1"
+     * Client: IP HP Utama (terdeteksi otomatis secara dinamis atau dipilih oleh pengguna).
+     */
+    var serverHostIp: String = "127.0.0.1"
+    var serverHostName: String = ""
 
     /**
      * Target MAC Address Wi-Fi Direct (P2P).
-     * Dapat diisi MAC address spesifik (format: "XX:XX:XX:XX:XX:XX")
-     * atau dibiarkan kosong ("") untuk mengaktifkan pencarian otomatis berbasis SSID P2P.
+     * Dapat dipilih melalui dialog pemindai perangkat atau diisi secara manual.
      */
     var targetP2pMac: String = ""
+    var targetP2pName: String = ""
 
     /**
      * Target MAC Address BLE.
-     * Dapat diisi MAC BLE spesifik jika diketahui, atau dibiarkan kosong ("")
-     * untuk mengandalkan auto-discovery berdasarkan Service UUID 0xFFF0 atau nama perangkat.
+     * Disimpan setelah pengguna memilih motor dari daftar pemindaian BLE.
      */
     var targetBleMac: String = ""
+    var targetBleName: String = ""
+
+    /**
+     * Kredensial Hotspot Wi-Fi untuk Android Auto Wireless WPP & Multi-Device
+     */
+    var hotspotSsid: String = "UMOX_AUTO"
+    var hotspotPass: String = "umox1234"
+
+    /**
+     * Identitas Bluetooth HP Utama untuk Auto-Wake Poke Android Auto
+     */
+    var primaryPhoneBtMac: String = ""
+    var primaryPhoneBtName: String = ""
 
     /**
      * Alamat IP gateway default cluster speedometer / headunit.
@@ -76,9 +119,34 @@ object AppConfig {
     fun loadFromPreferences(context: Context) {
         val sp = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val savedBle = sp.getString(KEY_BLE_MAC, "") ?: ""
+        val savedBleName = sp.getString(KEY_BLE_NAME, "") ?: ""
         val savedP2p = sp.getString(KEY_P2P_MAC, "") ?: ""
-        if (savedBle.isNotBlank()) targetBleMac = savedBle
-        if (savedP2p.isNotBlank()) targetP2pMac = savedP2p
+        val savedP2pName = sp.getString(KEY_P2P_NAME, "") ?: ""
+        if (savedBle.isNotBlank()) {
+            targetBleMac = savedBle
+            targetBleName = savedBleName
+        }
+        if (savedP2p.isNotBlank()) {
+            targetP2pMac = savedP2p
+            targetP2pName = savedP2pName
+        }
+
+        hotspotSsid = sp.getString(KEY_HOTSPOT_SSID, "UMOX_AUTO") ?: "UMOX_AUTO"
+        hotspotPass = sp.getString(KEY_HOTSPOT_PASS, "umox1234") ?: "umox1234"
+        primaryPhoneBtMac = sp.getString(KEY_PRIMARY_PHONE_BT_MAC, "") ?: ""
+        primaryPhoneBtName = sp.getString(KEY_PRIMARY_PHONE_BT_NAME, "") ?: ""
+
+        val savedModeStr = sp.getString(KEY_APP_MODE, AppMode.STANDALONE.name) ?: AppMode.STANDALONE.name
+        appMode = try { AppMode.valueOf(savedModeStr) } catch (_: Exception) { AppMode.STANDALONE }
+        val savedServerHost = sp.getString(KEY_SERVER_HOST, "") ?: ""
+        val savedServerName = sp.getString(KEY_SERVER_NAME, "") ?: ""
+        if (savedServerHost.isNotBlank()) {
+            serverHostIp = savedServerHost
+            serverHostName = savedServerName
+        } else if (appMode == AppMode.STANDALONE) {
+            serverHostIp = "127.0.0.1"
+            serverHostName = "Lokal"
+        }
 
         OmowayViewportConfig.useClusterSafeMargins = sp.getBoolean("pref_safe_margins_enabled", true)
         OmowayViewportConfig.marginLeft = sp.getInt("pref_margin_left", 0)
@@ -113,26 +181,94 @@ object AppConfig {
     }
 
     /**
-     * Menyimpan target MAC BLE ke penyimpanan lokal HP (tidak pernah ter-commit ke git).
+     * Menyimpan target MAC & Nama BLE ke penyimpanan lokal HP (tidak pernah ter-commit ke git).
      */
-    fun saveBleMac(context: Context, mac: String) {
+    fun saveBleMac(context: Context, mac: String, name: String = "") {
         if (mac.isBlank()) return
         targetBleMac = mac.trim().uppercase()
+        if (name.isNotBlank()) targetBleName = name.trim()
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_BLE_MAC, targetBleMac)
+            .putString(KEY_BLE_NAME, targetBleName)
             .apply()
     }
 
     /**
-     * Menyimpan target MAC P2P ke penyimpanan lokal HP (tidak pernah ter-commit ke git).
+     * Menyimpan target MAC & Nama P2P ke penyimpanan lokal HP (tidak pernah ter-commit ke git).
      */
-    fun saveP2pMac(context: Context, mac: String) {
+    fun saveP2pMac(context: Context, mac: String, name: String = "") {
         if (mac.isBlank()) return
         targetP2pMac = mac.trim().uppercase()
+        if (name.isNotBlank()) targetP2pName = name.trim()
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_P2P_MAC, targetP2pMac)
+            .putString(KEY_P2P_NAME, targetP2pName)
+            .apply()
+    }
+
+    /**
+     * Menghapus pasangan motor tersimpan agar pengguna dapat memindai dan memilih motor baru.
+     */
+    fun resetMotorPairing(context: Context) {
+        targetBleMac = ""
+        targetBleName = ""
+        targetP2pMac = ""
+        targetP2pName = ""
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .remove(KEY_BLE_MAC)
+            .remove(KEY_BLE_NAME)
+            .remove(KEY_P2P_MAC)
+            .remove(KEY_P2P_NAME)
+            .apply()
+    }
+
+    /**
+     * Menyimpan mode aplikasi (STANDALONE, SERVER, CLIENT) dan Host IP Server.
+     */
+    fun saveAppMode(context: Context, mode: AppMode, serverIp: String = "", serverName: String = "") {
+        appMode = mode
+        if (serverIp.isNotBlank()) {
+            serverHostIp = serverIp.trim()
+        } else if (mode == AppMode.STANDALONE) {
+            serverHostIp = "127.0.0.1"
+        }
+        if (serverName.isNotBlank()) {
+            serverHostName = serverName.trim()
+        }
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_APP_MODE, mode.name)
+            .putString(KEY_SERVER_HOST, serverHostIp)
+            .putString(KEY_SERVER_NAME, serverHostName)
+            .apply()
+    }
+
+    /**
+     * Menyimpan kredensial Hotspot Wi-Fi untuk aktivasi Android Auto Wireless WPP.
+     */
+    fun saveHotspotCredentials(context: Context, ssid: String, pass: String) {
+        hotspotSsid = ssid.trim()
+        hotspotPass = pass.trim()
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_HOTSPOT_SSID, hotspotSsid)
+            .putString(KEY_HOTSPOT_PASS, hotspotPass)
+            .apply()
+    }
+
+    /**
+     * Menyimpan MAC address Bluetooth HP Utama untuk auto-wake poke Android Auto.
+     */
+    fun savePrimaryPhoneBt(context: Context, mac: String, name: String = "") {
+        primaryPhoneBtMac = mac.trim()
+        primaryPhoneBtName = name.trim()
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_PRIMARY_PHONE_BT_MAC, primaryPhoneBtMac)
+            .putString(KEY_PRIMARY_PHONE_BT_NAME, primaryPhoneBtName)
             .apply()
     }
 
