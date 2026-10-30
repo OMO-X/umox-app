@@ -261,7 +261,8 @@ class MainActivity : AppCompatActivity() {
                     }
                     KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
                     KeyEvent.KEYCODE_MEDIA_PLAY,
-                    KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                    KeyEvent.KEYCODE_MEDIA_PAUSE,
+                    KeyEvent.KEYCODE_HEADSETHOOK -> {
                         receiver.sendKey(AaHeadlessReceiver.KEYCODE_MEDIA_PLAY_PAUSE)
                         return true
                     }
@@ -271,6 +272,18 @@ class MainActivity : AppCompatActivity() {
                     }
                     KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
                         receiver.sendKey(AaHeadlessReceiver.KEYCODE_MEDIA_PREVIOUS)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_VOLUME_UP -> {
+                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_VOLUME_UP)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_VOLUME_DOWN)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_VOLUME_MUTE -> {
+                        receiver.sendKey(AaHeadlessReceiver.KEYCODE_VOLUME_MUTE)
                         return true
                     }
                     KeyEvent.KEYCODE_M,
@@ -304,8 +317,12 @@ class MainActivity : AppCompatActivity() {
                     KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
                     KeyEvent.KEYCODE_MEDIA_PLAY,
                     KeyEvent.KEYCODE_MEDIA_PAUSE,
+                    KeyEvent.KEYCODE_HEADSETHOOK,
                     KeyEvent.KEYCODE_MEDIA_NEXT,
                     KeyEvent.KEYCODE_MEDIA_PREVIOUS,
+                    KeyEvent.KEYCODE_VOLUME_UP,
+                    KeyEvent.KEYCODE_VOLUME_DOWN,
+                    KeyEvent.KEYCODE_VOLUME_MUTE,
                     KeyEvent.KEYCODE_M,
                     KeyEvent.KEYCODE_BUTTON_X,
                     KeyEvent.KEYCODE_N,

@@ -65,6 +65,9 @@ class AaHeadlessReceiver(
         const val KEYCODE_DPAD_LEFT = 21
         const val KEYCODE_DPAD_RIGHT = 22
         const val KEYCODE_DPAD_CENTER = 23
+        const val KEYCODE_VOLUME_UP = 24
+        const val KEYCODE_VOLUME_DOWN = 25
+        const val KEYCODE_VOLUME_MUTE = 164
         const val KEYCODE_MEDIA_PLAY_PAUSE = 85
         const val KEYCODE_MEDIA_NEXT = 87
         const val KEYCODE_MEDIA_PREVIOUS = 88
@@ -830,6 +833,7 @@ class AaHeadlessReceiver(
         val supportedKeys = intArrayOf(
             KEYCODE_HOME, KEYCODE_BACK, KEYCODE_CALL, KEYCODE_ENDCALL,
             KEYCODE_DPAD_UP, KEYCODE_DPAD_DOWN, KEYCODE_DPAD_LEFT, KEYCODE_DPAD_RIGHT, KEYCODE_DPAD_CENTER,
+            KEYCODE_VOLUME_UP, KEYCODE_VOLUME_DOWN, KEYCODE_VOLUME_MUTE,
             KEYCODE_MEDIA_PLAY_PAUSE, KEYCODE_MEDIA_NEXT, KEYCODE_MEDIA_PREVIOUS,
             KEYCODE_MUSIC, KEYCODE_NAVIGATION,
             KEYCODE_ROTARY, KEYCODE_CUSTOM_2
