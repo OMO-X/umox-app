@@ -145,10 +145,6 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         AppConfig.loadFromPreferences(this)
-        // Jika HP saat ini sedang memancarkan Mobile Hotspot, otomatis set ke Mode SERVER
-        if (isHotspotHost() && AppConfig.appMode == AppConfig.AppMode.STANDALONE) {
-            AppConfig.saveAppMode(this, AppConfig.AppMode.SERVER)
-        }
         initManagers()
         setupLivePreviewTexture()
         setupViewportAndBoostControls()
@@ -866,8 +862,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startAutoDiscovery() {
-        if (AppConfig.appMode == AppConfig.AppMode.SERVER || isHotspotHost()) {
-            appendLog("📡 Hotspot Host terdeteksi (Mode Server): Wi-Fi Direct dinonaktifkan agar Hotspot tetap aktif.")
+        if (AppConfig.appMode == AppConfig.AppMode.SERVER) {
+            appendLog("📡 Mode Server aktif: Wi-Fi Direct dinonaktifkan.")
             return
         }
         try {
@@ -983,9 +979,7 @@ class MainActivity : AppCompatActivity() {
         when (AppConfig.appMode) {
             AppConfig.AppMode.STANDALONE -> {
                 peerDiscovery.stopAll()
-                if (!isHotspotHost()) {
-                    startAutoDiscovery()
-                }
+                startAutoDiscovery()
                 binding.btnAppMode.text = "MODE: STANDALONE ▼"
                 binding.btnAppMode.setTextColor(Color.parseColor("#FFB74D"))
             }

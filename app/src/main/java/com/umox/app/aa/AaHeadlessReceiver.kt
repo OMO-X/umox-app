@@ -374,21 +374,19 @@ class AaHeadlessReceiver(
                 continue
             }
 
-            // Opsi: Jika dikonfigurasi targetHost khusus (misal pengembang menguji mode Head Unit Server Developer)
-            if (isRemote) {
-                var socket: Socket? = null
-                try {
-                    socket = Socket()
-                    socket.tcpNoDelay = true
-                    socket.soTimeout = 12000
-                    socket.connect(InetSocketAddress(targetHost, AA_PORT_LOCAL), 2500)
-                    Log.i(TAG, "✔ Terhubung ke Server Android Auto Remote ($hostLabel:5277)")
-                    onStatusChanged("✔ Terhubung ke Server Android Auto ($hostLabel:5277)")
-                    val transport = AaSocketTransport(socket)
-                    attachTransport(transport)
-                } catch (_: Exception) {
-                    try { socket?.close() } catch (_: Exception) {}
-                }
+            // Hubungkan ke Server Android Auto (127.0.0.1:5277 untuk Standalone, atau IP Remote untuk Client)
+            var socket: Socket? = null
+            try {
+                socket = Socket()
+                socket.tcpNoDelay = true
+                socket.soTimeout = 12000
+                socket.connect(InetSocketAddress(targetHost, AA_PORT_LOCAL), 2500)
+                Log.i(TAG, "✔ Terhubung ke Server Android Auto ($hostLabel:$AA_PORT_LOCAL)")
+                onStatusChanged("✔ Terhubung ke Server Android Auto ($hostLabel:$AA_PORT_LOCAL)")
+                val transport = AaSocketTransport(socket)
+                attachTransport(transport)
+            } catch (_: Exception) {
+                try { socket?.close() } catch (_: Exception) {}
             }
 
             if (isRunning.get()) {
