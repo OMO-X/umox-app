@@ -70,8 +70,10 @@ class YouTubeCastSurfacePlayer(
     fun stop() {
         mainHandler.post {
             try {
-                webView?.destroy()
+                val wv = webView
                 webView = null
+                (wv?.parent as? ViewGroup)?.removeView(wv)
+                wv?.destroy()
                 presentation?.dismiss()
                 presentation = null
                 virtualDisplay?.release()
@@ -160,6 +162,7 @@ class YouTubeCastSurfacePlayer(
                         domStorageEnabled = true
                         allowFileAccess = false
                         cacheMode = WebSettings.LOAD_DEFAULT
+                        userAgentString = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
                     }
                     webChromeClient = WebChromeClient()
                     webViewClient = object : WebViewClient() {
@@ -176,7 +179,7 @@ class YouTubeCastSurfacePlayer(
                 webView = wv
 
                 val vid = pendingVideoId ?: "dQw4w9WgXcQ"
-                wv.loadDataWithBaseURL("https://www.youtube.com", buildHtml(vid), "text/html", "UTF-8", null)
+                wv.loadDataWithBaseURL("https://www.youtube.com", buildHtml(vid), "text/html", "UTF-8", "https://www.youtube.com")
             }
         }
         presentation = pres
@@ -246,7 +249,9 @@ class YouTubeCastSurfacePlayer(
                       'fs': 0,
                       'playsinline': 1,
                       'iv_load_policy': 3,
-                      'enablejsapi': 1
+                      'enablejsapi': 1,
+                      'origin': 'https://www.youtube.com',
+                      'widget_referrer': 'https://www.youtube.com'
                     },
                     events: {
                       'onReady': onPlayerReady,

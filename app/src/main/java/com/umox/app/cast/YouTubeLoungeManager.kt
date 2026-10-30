@@ -116,10 +116,14 @@ class YouTubeLoungeManager(
             conn.readTimeout = 5000
 
             if (conn.responseCode in 200..299) {
-                val resp = conn.inputStream.bufferedReader().use { it.readText() }
-                val json = JSONObject(resp)
-                screenId = json.optString("screenId", screenId)
-                loungeToken = json.optString("loungeToken", "")
+                val resp = conn.inputStream.bufferedReader().use { it.readText().trim() }
+                if (resp.startsWith("{")) {
+                    val json = JSONObject(resp)
+                    screenId = json.optString("screenId", screenId)
+                    loungeToken = json.optString("loungeToken", "")
+                } else {
+                    screenId = resp.replace("\"", "").trim()
+                }
                 context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     .edit()
                     .putString(KEY_SCREEN_ID, screenId)
@@ -142,7 +146,12 @@ class YouTubeLoungeManager(
             conn.readTimeout = 5000
 
             if (conn.responseCode in 200..299) {
-                return@withContext conn.inputStream.bufferedReader().use { it.readText().trim() }
+                val resp = conn.inputStream.bufferedReader().use { it.readText().trim() }
+                return@withContext if (resp.startsWith("{")) {
+                    JSONObject(resp).optString("pairing_code", resp)
+                } else {
+                    resp.replace("\"", "").trim()
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "fetchPairingCode error: ${e.message}")
