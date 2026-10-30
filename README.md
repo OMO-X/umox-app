@@ -97,12 +97,12 @@ umox-app/app/src/main/java/com/umox/app/
 ## 🛠️ Kompilasi & Instalasi via Terminal (ADB)
 
 ```powershell
-# 1. Kompilasi APK Debug dengan Gradle
-C:\Users\armadeas\UMOX\tools\gradle-8.7\bin\gradle.bat assembleDebug -p c:\Users\armadeas\UMOX\umox-app
+# 1. Kompilasi APK dengan Gradle
+./gradlew assembleRelease
 
 # 2. Instal ke HP via ADB (USB atau Wireless Debugging)
-C:\Users\armadeas\UMOX\tools\platform-tools\adb.exe install -r c:\Users\armadeas\UMOX\umox-app\app\build\outputs\apk\debug\app-debug.apk
+adb install -r app/build/outputs/apk/release/app-release.apk
 
 # 3. Jalankan Aplikasi UMOX Auto 2.0
-C:\Users\armadeas\UMOX\tools\platform-tools\adb.exe shell am start -n com.umox.app/.MainActivity
+adb shell am start -n com.umox.app/.MainActivity
 ```
