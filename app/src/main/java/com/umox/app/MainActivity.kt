@@ -43,6 +43,10 @@ import com.umox.app.aa.AaHeadlessReceiver
 import com.umox.app.ble.BleDeviceItem
 import com.umox.app.ble.BleSniffer
 import com.umox.app.ble.GattExplorer
+import com.umox.app.cast.DialServer
+import com.umox.app.cast.YouTubeCastSurfacePlayer
+import com.umox.app.cast.YouTubeLoungeManager
+import com.umox.app.cast.YouTubeUrlParser
 import com.umox.app.config.AppConfig
 import com.umox.app.databinding.ActivityMainBinding
 import com.umox.app.discovery.UmoxPeerDiscovery
@@ -73,6 +77,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var peerDiscovery: UmoxPeerDiscovery
     private lateinit var usbAoaManager: UsbAoaManager
     private lateinit var wppBluetoothServer: WppBluetoothServer
+
+    private var dialServer: DialServer? = null
+    private var loungeManager: YouTubeLoungeManager? = null
+    private var youtubePlayer: YouTubeCastSurfacePlayer? = null
+    private var cachedTvPairingCode: String = ""
 
     @Volatile
     private var pendingUsbTransport: UsbAoaTransport? = null
@@ -165,6 +174,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        setupYouTubeCastModule()
         refreshDashboardState()
         handleCustomAction(intent)
     }
@@ -904,6 +914,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleCustomAction(intent: Intent?) {
         if (intent == null) return
+        if (intent.action == Intent.ACTION_SEND && intent.type == "text/plain") {
+            val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
+            val videoId = YouTubeUrlParser.extractVideoId(sharedText)
+            if (videoId != null) {
+                appendLog("📥 Menerima link YouTube via Share: $videoId")
+                startYouTubeCastService(videoId)
+            } else {
+                appendLog("⚠ Teks yang dibagikan bukan tautan YouTube valid: $sharedText")
+            }
+            return
+        }
         if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED || intent.action == "com.umox.app.ACTION_SCAN_USB") {
             appendLog("🔌 Intent USB Device Attached / Scan diterima!")
             if (!ScreenCastService.isStreamingActive) {
@@ -1620,29 +1641,44 @@ class MainActivity : AppCompatActivity() {
 
         // Rotary Knob Controls (seperti knob stang motor & WayXAuto)
         binding.btnRotaryPrev.setOnClickListener {
+            if (ScreenCastService.currentMode == StreamMode.YOUTUBE_CAST && youtubePlayer != null) {
+                youtubePlayer?.seekRewind(10f)
+                appendLog("⏪ YouTube: Mundur 10 detik")
+                return@setOnClickListener
+            }
             val receiver = ScreenCastService.activeAaReceiver
             if (receiver != null) {
                 receiver.sendRotary(-1)
             } else {
-                Toast.makeText(this, "Mulai Android Auto terlebih dahulu", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Mulai Android Auto atau YouTube Cast terlebih dahulu", Toast.LENGTH_SHORT).show()
             }
         }
 
         binding.btnRotarySelect.setOnClickListener {
+            if (ScreenCastService.currentMode == StreamMode.YOUTUBE_CAST && youtubePlayer != null) {
+                youtubePlayer?.togglePlayPause()
+                appendLog("⏯ YouTube: Play / Pause")
+                return@setOnClickListener
+            }
             val receiver = ScreenCastService.activeAaReceiver
             if (receiver != null) {
                 receiver.sendKey(AaHeadlessReceiver.KEYCODE_DPAD_CENTER)
             } else {
-                Toast.makeText(this, "Mulai Android Auto terlebih dahulu", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Mulai Android Auto atau YouTube Cast terlebih dahulu", Toast.LENGTH_SHORT).show()
             }
         }
 
         binding.btnRotaryNext.setOnClickListener {
+            if (ScreenCastService.currentMode == StreamMode.YOUTUBE_CAST && youtubePlayer != null) {
+                youtubePlayer?.seekForward(10f)
+                appendLog("⏩ YouTube: Maju 10 detik")
+                return@setOnClickListener
+            }
             val receiver = ScreenCastService.activeAaReceiver
             if (receiver != null) {
                 receiver.sendRotary(1)
             } else {
-                Toast.makeText(this, "Mulai Android Auto terlebih dahulu", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Mulai Android Auto atau YouTube Cast terlebih dahulu", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -1668,12 +1704,17 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnRemotePlayPause.setOnClickListener {
+            if (ScreenCastService.currentMode == StreamMode.YOUTUBE_CAST && youtubePlayer != null) {
+                youtubePlayer?.togglePlayPause()
+                appendLog("⏯ YouTube: Play / Pause")
+                return@setOnClickListener
+            }
             val receiver = ScreenCastService.activeAaReceiver
             if (receiver != null) {
                 receiver.sendKey(AaHeadlessReceiver.KEYCODE_MEDIA_PLAY_PAUSE)
                 appendLog("⏯ Mengirim perintah Play/Pause ke Android Auto.")
             } else {
-                Toast.makeText(this, "Mulai Android Auto terlebih dahulu", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Mulai Android Auto atau YouTube Cast terlebih dahulu", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -1690,7 +1731,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Mode Alternatif: Screen Mirroring & Test Video Baseline
+        // Mode Alternatif: YouTube Cast, Screen Mirroring & Test Video Baseline
+        binding.btnStartYouTubeCast.setOnClickListener {
+            showYouTubeCastDialog()
+        }
+
         binding.btnStartCast.setOnClickListener {
             requestScreenCapture()
         }
@@ -2031,6 +2076,7 @@ class MainActivity : AppCompatActivity() {
                 StreamMode.ANDROID_AUTO -> "ANDROID AUTO"
                 StreamMode.SCREEN_MIRROR -> "MIRROR LAYAR"
                 StreamMode.TEST_PATTERN -> "TEST VIDEO"
+                StreamMode.YOUTUBE_CAST -> "YOUTUBE CAST"
                 StreamMode.IDLE -> "IDLE"
             }
             binding.tvConnectionBadge.text = if (bikeProjecting) {
@@ -2216,6 +2262,146 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun setupYouTubeCastModule() {
+        ScreenCastService.onYouTubeSurfaceReady = { surface, videoId ->
+            runOnUiThread {
+                youtubePlayer?.stop()
+                val player = YouTubeCastSurfacePlayer(
+                    context = this@MainActivity,
+                    outputSurface = surface,
+                    onVideoTitleChanged = { title ->
+                        appendLog("🎵 YouTube Cast: $title")
+                        refreshDashboardState()
+                    },
+                    onPlaybackStateChanged = { _ ->
+                        refreshDashboardState()
+                    },
+                    onLog = { appendLog(it) }
+                )
+                youtubePlayer = player
+                player.start(videoId)
+            }
+        }
+
+        ScreenCastService.onYouTubeStopRequested = {
+            runOnUiThread {
+                youtubePlayer?.stop()
+                youtubePlayer = null
+            }
+        }
+
+        try {
+            dialServer = DialServer(
+                context = this,
+                getLocalIp = { getWifiIpAddress() ?: "127.0.0.1" },
+                onYouTubeLaunch = { videoId, pairingCode ->
+                    runOnUiThread {
+                        if (pairingCode != null) {
+                            loungeManager?.registerDialPairingCode(pairingCode)
+                        }
+                        startYouTubeCastService(videoId)
+                    }
+                },
+                onYouTubeStop = {
+                    runOnUiThread {
+                        if (ScreenCastService.currentMode == StreamMode.YOUTUBE_CAST) {
+                            stopCastService()
+                        }
+                    }
+                },
+                onLog = { appendLog(it) }
+            ).apply { start() }
+
+            loungeManager = YouTubeLoungeManager(
+                context = this,
+                onPairingCodeReady = { code ->
+                    cachedTvPairingCode = code
+                    appendLog("📺 YouTube TV Pairing Code Siap: $code")
+                },
+                onVideoCommandReceived = { videoId ->
+                    runOnUiThread {
+                        startYouTubeCastService(videoId)
+                    }
+                },
+                onLog = { appendLog(it) }
+            ).apply { refreshPairingCode() }
+        } catch (e: Exception) {
+            appendLog("⚠ Gagal inisialisasi DialServer: ${e.message}")
+        }
+    }
+
+    private fun startYouTubeCastService(videoId: String? = null) {
+        val targetIp = binding.etClusterIp.text.toString().ifBlank { AppConfig.defaultClusterIp }
+        val ctrlPort = binding.etControlPort.text.toString().toIntOrNull() ?: AppConfig.defaultControlPort
+        val videoPort = binding.etVideoPort.text.toString().toIntOrNull() ?: AppConfig.defaultVideoPort
+
+        val serviceIntent = Intent(this, ScreenCastService::class.java).apply {
+            action = ScreenCastService.ACTION_START_YOUTUBE_CAST
+            putExtra(ScreenCastService.EXTRA_TARGET_IP, targetIp)
+            putExtra(ScreenCastService.EXTRA_CTRL_PORT, ctrlPort)
+            putExtra(ScreenCastService.EXTRA_VIDEO_PORT, videoPort)
+            putExtra(ScreenCastService.EXTRA_YOUTUBE_VIDEO_ID, videoId)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
+    }
+
+    private fun showYouTubeCastDialog() {
+        val dialogView = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(50, 40, 50, 20)
+        }
+
+        val tvInfo = android.widget.TextView(this).apply {
+            val codeStr = if (cachedTvPairingCode.isNotBlank()) cachedTvPairingCode else "Sedang memuat..."
+            text = "📺 YOUTUBE CAST (DIAL & KODE TV)\n\n" +
+                    "1. Cast Otomatis (Wi-Fi/Hotspot):\n" +
+                    "Buka YouTube di HP -> Tekan ikon Cast -> Pilih 'UMOX Display (OMOWAY)'.\n\n" +
+                    "2. Tautkan via Kode TV (Permanen):\n" +
+                    "Buka YouTube -> Pengaturan -> Tonton di TV -> Tautkan dengan kode TV:\n" +
+                    "⭐ KODE TV: $codeStr\n\n" +
+                    "3. Mode Standalone (HP Tunggal):\n" +
+                    "Buka video di YouTube -> Bagikan (Share) -> Pilih 'UMOX Auto', atau tempel tautan/ID di bawah:"
+            textSize = 12.5f
+            setTextColor(Color.parseColor("#E6EDF3"))
+            setLineSpacing(4f, 1.15f)
+        }
+        dialogView.addView(tvInfo)
+
+        val etUrl = EditText(this).apply {
+            hint = "Tempel link YouTube (youtu.be/...)"
+            setSingleLine(true)
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.GRAY)
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = 20 }
+        }
+        dialogView.addView(etUrl)
+
+        AlertDialog.Builder(this)
+            .setTitle("YouTube Cast Speedometer")
+            .setView(dialogView)
+            .setPositiveButton("▶ Putar ke Motor") { _, _ ->
+                val input = etUrl.text.toString().trim()
+                val vid = YouTubeUrlParser.extractVideoId(input) ?: input.ifBlank { "dQw4w9WgXcQ" }
+                appendLog("🎬 Memulai YouTube Cast: $vid")
+                startYouTubeCastService(vid)
+            }
+            .setNegativeButton("Buka YouTube") { _, _ ->
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com")))
+                } catch (_: Exception) {}
+            }
+            .setNeutralButton("Tutup", null)
+            .show()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         isTickerRunning = false
@@ -2229,5 +2415,9 @@ class MainActivity : AppCompatActivity() {
         wifiP2pProbe.unregister()
         try { usbAoaManager.stopListening() } catch (_: Exception) {}
         try { wppBluetoothServer.stop() } catch (_: Exception) {}
+        try { dialServer?.stop() } catch (_: Exception) {}
+        dialServer = null
+        try { youtubePlayer?.stop() } catch (_: Exception) {}
+        youtubePlayer = null
     }
 }

@@ -32,7 +32,8 @@ enum class StreamMode {
     IDLE,
     ANDROID_AUTO,
     SCREEN_MIRROR,
-    TEST_PATTERN
+    TEST_PATTERN,
+    YOUTUBE_CAST
 }
 
 class ScreenCastService : Service() {
@@ -41,6 +42,7 @@ class ScreenCastService : Service() {
         const val ACTION_START_ANDROID_AUTO = "com.umox.app.stream.START_ANDROID_AUTO"
         const val ACTION_START_SCREEN = "com.umox.app.stream.START_SCREEN"
         const val ACTION_START_PATTERN = "com.umox.app.stream.START_PATTERN"
+        const val ACTION_START_YOUTUBE_CAST = "com.umox.app.stream.START_YOUTUBE_CAST"
         const val ACTION_STOP = "com.umox.app.stream.STOP"
 
         const val EXTRA_RESULT_CODE = "extra_result_code"
@@ -48,6 +50,7 @@ class ScreenCastService : Service() {
         const val EXTRA_TARGET_IP = "extra_target_ip"
         const val EXTRA_VIDEO_PORT = "extra_video_port"
         const val EXTRA_CTRL_PORT = "extra_ctrl_port"
+        const val EXTRA_YOUTUBE_VIDEO_ID = "extra_youtube_video_id"
 
         private const val NOTIFICATION_CHANNEL_ID = "umox_cast_channel"
         private const val NOTIFICATION_ID = 1001
@@ -135,6 +138,13 @@ class ScreenCastService : Service() {
         @Volatile
         private var currentInstance: ScreenCastService? = null
 
+        @Volatile
+        var activeBridgeSurface: Surface? = null
+            private set
+
+        var onYouTubeSurfaceReady: ((Surface, String?) -> Unit)? = null
+        var onYouTubeStopRequested: (() -> Unit)? = null
+
         var onLogCallback: ((String) -> Unit)? = null
         var onStateChangedCallback: (() -> Unit)? = null
     }
@@ -209,6 +219,16 @@ class ScreenCastService : Service() {
                     startForeground(NOTIFICATION_ID, notif)
                 }
                 startPatternProjection(targetIp, videoPort, ctrlPort)
+            }
+            ACTION_START_YOUTUBE_CAST -> {
+                val videoId = intent.getStringExtra(EXTRA_YOUTUBE_VIDEO_ID)
+                val notif = buildNotification("YouTube Cast 60 FPS Aktif (960×360)")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(NOTIFICATION_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+                } else {
+                    startForeground(NOTIFICATION_ID, notif)
+                }
+                startYouTubeCastProjection(targetIp, videoPort, ctrlPort, videoId)
             }
             ACTION_STOP -> {
                 log("⏹ Menghentikan sesi streaming...")
@@ -340,6 +360,45 @@ class ScreenCastService : Service() {
         )
         assetPlayer = player
         player.start()
+    }
+
+    private fun startYouTubeCastProjection(
+        targetIp: String,
+        videoPort: Int,
+        ctrlPort: Int,
+        videoId: String?
+    ) {
+        stopPipelineOnly()
+        log("🎬 Memulai YouTube Cast Hardware Bridge (960×360 @ 60 FPS)...")
+        isStreamingActive = true
+        currentMode = StreamMode.YOUTUBE_CAST
+        resetStats()
+        onStateChangedCallback?.invoke()
+
+        ensureClusterSocketsAndLoop(targetIp, videoPort, ctrlPort)
+
+        val encoder = MediaEncoder(
+            width = 960,
+            height = 360,
+            dpi = 160,
+            bitrate = AppConfig.currentBitrate,
+            fps = AppConfig.currentFps,
+            onFrameEncoded = { frame ->
+                onNewEncodedFrame(frame)
+            },
+            onLog = { log(it) }
+        )
+        val bridgeSurface = encoder.startSurfaceBridge()
+        if (bridgeSurface == null) {
+            log("✖ Gagal membuat Surface bridge untuk YouTube Cast.")
+            stopPipelineOnly()
+            return
+        }
+        mediaEncoder = encoder
+        activeBridgeSurface = bridgeSurface
+
+        log("★ Surface OpenGL YouTube Cast siap! Menghubungkan ke pemutar...")
+        onYouTubeSurfaceReady?.invoke(bridgeSurface, videoId)
     }
 
     private fun onNewEncodedFrame(frame: EncodedVideoFrame) {
@@ -520,6 +579,9 @@ class ScreenCastService : Service() {
     }
 
     private fun stopPipelineOnly() {
+        onYouTubeStopRequested?.invoke()
+        activeBridgeSurface = null
+
         aaReceiver?.stop()
         aaReceiver = null
         activeAaReceiver = null

@@ -1379,6 +1379,24 @@
                 android:letterSpacing="0.06"
                 android:textStyle="bold" />
 
+            <!-- TOMBOL YOUTUBE CAST FULL-SCREEN TANPA SCREENCAST -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnStartYouTubeCast"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginBottom="10dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="📺 YouTube Cast (DIAL &amp; Kode TV)"
+                android:textColor="#FF5252"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                app:backgroundTint="#261214"
+                app:cornerRadius="12dp"
+                app:strokeColor="#662227"
+                app:strokeWidth="1dp" />
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
