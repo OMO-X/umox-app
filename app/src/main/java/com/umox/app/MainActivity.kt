@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.ActivityManager
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ComponentName
@@ -16,6 +17,11 @@ import android.graphics.SurfaceTexture
 import android.media.projection.MediaProjectionManager
 import android.net.ConnectivityManager
 import android.net.Uri
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -27,6 +33,7 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.View
 import android.view.WindowManager
+import android.widget.EditText
 import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -38,15 +45,20 @@ import com.umox.app.ble.BleSniffer
 import com.umox.app.ble.GattExplorer
 import com.umox.app.config.AppConfig
 import com.umox.app.databinding.ActivityMainBinding
+import com.umox.app.discovery.UmoxPeerDiscovery
 import com.umox.app.stream.OmowayViewportConfig
 import com.umox.app.stream.ScreenCastService
 import com.umox.app.stream.SocketStreamer
 import com.umox.app.stream.StreamMode
+import com.umox.app.usb.UsbAoaManager
+import com.umox.app.usb.UsbAoaTransport
 import com.umox.app.wifi.WifiP2pProbe
+import com.umox.app.wpp.WppBluetoothServer
 import java.net.BindException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.net.Socket
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -58,10 +70,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var bleSniffer: BleSniffer
     private lateinit var gattExplorer: GattExplorer
     private lateinit var wifiP2pProbe: WifiP2pProbe
+    private lateinit var peerDiscovery: UmoxPeerDiscovery
+    private lateinit var usbAoaManager: UsbAoaManager
+    private lateinit var wppBluetoothServer: WppBluetoothServer
+
+    @Volatile
+    private var pendingUsbTransport: UsbAoaTransport? = null
 
     private var extractedSsid: String = "DIRECT-OMO-*"
     private var extractedPass: String = "12345678"
     private val discoveredBleDevices = mutableMapOf<String, BleDeviceItem>()
+    private val discoveredP2pPeers = mutableMapOf<String, android.net.wifi.p2p.WifiP2pDevice>()
+    private val discoveredServers = java.util.concurrent.ConcurrentHashMap<String, com.umox.app.discovery.DiscoveredServer>()
     private var hasAutoConnectedBle = false
     private var activePreviewSurface: Surface? = null
     private var pendingAutoStartAaAfterSettings = false
@@ -125,20 +145,31 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         AppConfig.loadFromPreferences(this)
+        // Jika HP saat ini sedang memancarkan Mobile Hotspot, otomatis set ke Mode SERVER
+        if (isHotspotHost() && AppConfig.appMode == AppConfig.AppMode.STANDALONE) {
+            AppConfig.saveAppMode(this, AppConfig.AppMode.SERVER)
+        }
         initManagers()
         setupLivePreviewTexture()
         setupViewportAndBoostControls()
         setupClickListeners()
+        updateModeUi()
         checkAndRequestPermissions()
 
         ScreenCastService.onLogCallback = { msg ->
             runOnUiThread { appendLog(msg) }
         }
+        var lastStateRefreshMs = 0L
         ScreenCastService.onStateChangedCallback = {
-            runOnUiThread { refreshDashboardState() }
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now - lastStateRefreshMs >= 350L) {
+                lastStateRefreshMs = now
+                runOnUiThread { refreshDashboardState() }
+            }
         }
 
         refreshDashboardState()
+        handleCustomAction(intent)
     }
 
     override fun onResume() {
@@ -572,6 +603,8 @@ class MainActivity : AppCompatActivity() {
             context = this,
             onPeersDiscovered = { peers ->
                 runOnUiThread {
+                    discoveredP2pPeers.clear()
+                    peers.forEach { discoveredP2pPeers[it.deviceAddress] = it }
                     if (peers.isNotEmpty()) {
                         refreshDashboardState()
                     }
@@ -637,21 +670,156 @@ class MainActivity : AppCompatActivity() {
             context = this,
             onDeviceFound = { item ->
                 discoveredBleDevices[item.address] = item
-                if (item.isCandidate && !hasAutoConnectedBle) {
-                    hasAutoConnectedBle = true
-                    AppConfig.saveBleMac(this, item.address)
-                    runOnUiThread {
-                        appendLog("★ Kandidat Motor Ditemukan: ${item.name} (${item.address}) [${item.rssi} dBm]")
-                        bleSniffer.stopScan()
-                        gattExplorer.connectAndExplore(item.device)
+                runOnUiThread {
+                    // HANYA sambungkan otomatis jika MAC motor ini persis sama dengan motor yang disimpan pengguna!
+                    // Jika belum pernah memilih motor (AppConfig.targetBleMac kosong), JANGAN sambungkan sembarangan!
+                    if (AppConfig.targetBleMac.isNotBlank()) {
+                        if (item.address.equals(AppConfig.targetBleMac, ignoreCase = true) && !hasAutoConnectedBle) {
+                            hasAutoConnectedBle = true
+                            appendLog("★ Menyambungkan otomatis ke motor tersimpan: ${item.name} (${item.address})")
+                            bleSniffer.stopScan()
+                            gattExplorer.connectAndExplore(item.device)
+                        }
                     }
                 }
             },
             onLog = { msg -> runOnUiThread { appendLog("[BLE] $msg") } }
         )
+
+        peerDiscovery = UmoxPeerDiscovery(
+            onLog = { msg -> runOnUiThread { appendLog("[RADAR] $msg") } }
+        )
+
+        usbAoaManager = UsbAoaManager(
+            context = this,
+            onStatusChanged = { msg ->
+                runOnUiThread { appendLog(msg) }
+            },
+            onTransportReady = { transport ->
+                runOnUiThread { onUsbTransportConnected(transport) }
+            },
+            onTransportClosed = {
+                runOnUiThread { appendLog("🔌 Sesi USB AOA ditutup.") }
+            }
+        )
+        usbAoaManager.startListening()
+
+        wppBluetoothServer = WppBluetoothServer(
+            context = this,
+            getHotspotSsid = {
+                if (isHotspotHost()) {
+                    AppConfig.hotspotSsid
+                } else {
+                    val clientSsid = getActiveWifiSsid()
+                    // Cegah loop refleksi jika HP Penerima terhubung ke Hotspot HP Utama yang dipilih
+                    val primaryName = AppConfig.primaryPhoneBtName.trim()
+                    if (primaryName.isNotBlank() && clientSsid.contains(primaryName, ignoreCase = true)) {
+                        runOnUiThread {
+                            appendLog("⚠ Peringatan: HP Penerima terhubung ke Hotspot HP Utama ($clientSsid). Di Android Auto Wireless, HP Penerima yang harus menjadi Host! Mengalihkan ke SSID: ${AppConfig.hotspotSsid}")
+                        }
+                        AppConfig.hotspotSsid
+                    } else {
+                        clientSsid
+                    }
+                }
+            },
+            getHotspotPassword = { AppConfig.hotspotPass },
+            getHotspotBssid = {
+                if (isHotspotHost()) "" else getActiveWifiBssid()
+            },
+            getTargetIp = {
+                val ip = getWifiIpAddress()
+                if (ip != null) ip else if (isHotspotHost()) "192.168.43.1" else "127.0.0.1"
+            },
+            onPhoneConnected = { phoneName ->
+                runOnUiThread {
+                    appendLog("★ Ponsel $phoneName terhubung via Bluetooth RFCOMM! Mempersiapkan Android Auto...")
+                    if (!ScreenCastService.isStreamingActive) {
+                        startAndroidAutoService()
+                    }
+                }
+            },
+            onStatusChanged = { msg ->
+                runOnUiThread { appendLog(msg) }
+            },
+            onPhoneHandshakeSuccess = { phoneName ->
+                runOnUiThread {
+                    appendLog("★ Sesi Nirkabel WPP berhasil dinegosiasikan dengan $phoneName! Memastikan Android Auto aktif...")
+                    if (!ScreenCastService.isStreamingActive) {
+                        startAndroidAutoService()
+                    }
+                }
+            }
+        )
+        wppBluetoothServer.start()
+    }
+
+    private fun onUsbTransportConnected(transport: UsbAoaTransport) {
+        val activeReceiver = ScreenCastService.activeAaReceiver
+        if (activeReceiver != null && ScreenCastService.isStreamingActive) {
+            appendLog("★ Menghubungkan aliran data USB AOA ke Pipeline Android Auto yang sedang aktif...")
+            activeReceiver.attachTransport(transport)
+        } else {
+            appendLog("★ Memulai Pipeline Android Auto otomatis via USB AOA 2.0...")
+            pendingUsbTransport = transport
+            startAndroidAutoService()
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleCustomAction(intent)
+    }
+
+    private fun handleCustomAction(intent: Intent?) {
+        if (intent == null) return
+        if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED || intent.action == "com.umox.app.ACTION_SCAN_USB") {
+            appendLog("🔌 Intent USB Device Attached / Scan diterima!")
+            if (!ScreenCastService.isStreamingActive) {
+                appendLog("🔌 Mempersiapkan Receiver Android Auto...")
+                startAndroidAutoService()
+            }
+            usbAoaManager.scanAndConnect()
+        } else if (intent.action == "com.umox.app.ACTION_WAKE_PHONE") {
+            val mac = intent.getStringExtra("mac")?.ifBlank { null } ?: AppConfig.primaryPhoneBtMac
+            if (mac.isNotBlank()) {
+                if (!ScreenCastService.isStreamingActive) {
+                    appendLog("🔌 Mempersiapkan Receiver Android Auto...")
+                    startAndroidAutoService()
+                }
+                appendLog("⚡ Memicu Wake Phone via Intent ke $mac...")
+                wppBluetoothServer.wakePhone(mac)
+            }
+        }
+    }
+
+    private fun isHotspotHost(): Boolean {
+        try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val iface = interfaces.nextElement()
+                if (!iface.isUp) continue
+                val name = iface.name.lowercase()
+                val isTether = name.contains("swlan") || name.contains("ap") || name.contains("tether") || name.contains("rndis") || name.contains("bridge")
+                if (!isTether) continue
+                val addrs = iface.inetAddresses
+                while (addrs.hasMoreElements()) {
+                    val addr = addrs.nextElement()
+                    if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
+                        return true
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return false
     }
 
     private fun startAutoDiscovery() {
+        if (AppConfig.appMode == AppConfig.AppMode.SERVER || isHotspotHost()) {
+            appendLog("📡 Hotspot Host terdeteksi (Mode Server): Wi-Fi Direct dinonaktifkan agar Hotspot tetap aktif.")
+            return
+        }
         try {
             wifiP2pProbe.registerAndListen()
             bleSniffer.startScan()
@@ -660,7 +828,566 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun getWifiGatewayIp(): String? {
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val dhcp = wm?.dhcpInfo
+            val gateway = dhcp?.gateway ?: 0
+            if (gateway != 0) {
+                return String.format(
+                    Locale.US,
+                    "%d.%d.%d.%d",
+                    gateway and 0xFF,
+                    gateway shr 8 and 0xFF,
+                    gateway shr 16 and 0xFF,
+                    gateway shr 24 and 0xFF
+                )
+            }
+        } catch (_: Exception) {}
+
+        // Fallback: baca dari tabel ARP kernel untuk menemukan IP gateway Hotspot secara dinamis
+        try {
+            val arpLines = java.io.File("/proc/net/arp").readLines()
+            for (line in arpLines.drop(1)) {
+                val tokens = line.split("\\s+".toRegex())
+                if (tokens.size >= 4 && tokens[0].isNotBlank()) {
+                    val ip = tokens[0]
+                    if (ip != "0.0.0.0" && !ip.startsWith("127.")) {
+                        return ip
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return null
+    }
+
+    private fun getWifiIpAddress(): String? {
+        try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+            var tetherIp: String? = null
+            var wifiIp: String? = null
+            while (interfaces.hasMoreElements()) {
+                val iface = interfaces.nextElement()
+                if (!iface.isUp) continue
+                val name = iface.name.lowercase()
+                val isTether = name.contains("swlan") || name.contains("ap") || name.contains("tether") || name.contains("rndis") || name.contains("wlan1") || name.contains("bridge")
+                val addrs = iface.inetAddresses
+                while (addrs.hasMoreElements()) {
+                    val addr = addrs.nextElement()
+                    if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
+                        val host = addr.hostAddress ?: continue
+                        if (isTether) {
+                            tetherIp = host
+                            break
+                        } else if (wifiIp == null) {
+                            wifiIp = host
+                        }
+                    }
+                }
+                if (tetherIp != null) return tetherIp
+            }
+            if (wifiIp != null) return wifiIp
+
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val ip = wm?.connectionInfo?.ipAddress ?: 0
+            if (ip != 0) {
+                return String.format(
+                    Locale.US,
+                    "%d.%d.%d.%d",
+                    ip and 0xFF,
+                    ip shr 8 and 0xFF,
+                    ip shr 16 and 0xFF,
+                    ip shr 24 and 0xFF
+                )
+            }
+        } catch (_: Exception) {}
+        return null
+    }
+
+    private fun getActiveWifiSsid(): String {
+        if (isHotspotHost()) {
+            return AppConfig.hotspotSsid
+        }
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val rawSsid = wm?.connectionInfo?.ssid?.replace("\"", "")?.trim()
+            if (!rawSsid.isNullOrBlank() && rawSsid != "<unknown ssid>" && rawSsid != "0x") {
+                return rawSsid
+            }
+        } catch (_: Exception) {}
+        return AppConfig.hotspotSsid
+    }
+
+    private fun getActiveWifiBssid(): String {
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val bssid = wm?.connectionInfo?.bssid?.trim() ?: ""
+            if (bssid.isNotBlank() && bssid != "00:00:00:00:00:00") {
+                return bssid
+            }
+        } catch (_: Exception) {}
+        return ""
+    }
+
+    private fun updateModeUi() {
+        when (AppConfig.appMode) {
+            AppConfig.AppMode.STANDALONE -> {
+                peerDiscovery.stopAll()
+                if (!isHotspotHost()) {
+                    startAutoDiscovery()
+                }
+                binding.btnAppMode.text = "MODE: STANDALONE ▼"
+                binding.btnAppMode.setTextColor(Color.parseColor("#FFB74D"))
+            }
+            AppConfig.AppMode.SERVER -> {
+                peerDiscovery.stopListening()
+                try {
+                    wifiP2pProbe.unregister()
+                    bleSniffer.stopScan()
+                } catch (_: Exception) {}
+                val myIp = getWifiIpAddress() ?: "127.0.0.1"
+                val devName = Build.MODEL ?: "HP Server"
+                peerDiscovery.startBroadcasting(devName, myIp, AaHeadlessReceiver.AA_PORT_LOCAL) {
+                    isAaServerListening
+                }
+                binding.btnAppMode.text = "MODE: SERVER ($myIp) ▼"
+                binding.btnAppMode.setTextColor(Color.parseColor("#4CAF50"))
+            }
+            AppConfig.AppMode.CLIENT -> {
+                peerDiscovery.stopBroadcasting()
+                try {
+                    startAutoDiscovery()
+                } catch (_: Exception) {}
+                if (!peerDiscovery.isListening) {
+                    peerDiscovery.startListening { serverName, serverIp, serverPort, isAaActive ->
+                        discoveredServers[serverIp] = com.umox.app.discovery.DiscoveredServer(serverName, serverIp, serverPort, isAaActive)
+
+                        if (AppConfig.serverHostIp.isBlank() || AppConfig.serverHostIp == "127.0.0.1") {
+                            AppConfig.saveAppMode(this, AppConfig.AppMode.CLIENT, serverIp, serverName)
+                            appendLog("📡 RADAR: Terhubung otomatis ke $serverName ($serverIp:$serverPort)")
+                            Toast.makeText(this, "✔ Terhubung otomatis ke $serverName!", Toast.LENGTH_SHORT).show()
+                            val displayLabel = "$serverName ($serverIp)"
+                            binding.btnAppMode.text = "MODE: CLIENT ($displayLabel) ▼"
+                            isAaServerListening = isAaActive
+                            refreshDashboardState()
+                        } else if (AppConfig.serverHostIp == serverIp) {
+                            if (isAaServerListening != isAaActive) {
+                                isAaServerListening = isAaActive
+                                refreshDashboardState()
+                            }
+                        }
+                    }
+                }
+                val currentHost = AppConfig.serverHostIp
+                val hostLabel = if (AppConfig.serverHostName.isNotBlank()) "${AppConfig.serverHostName} ($currentHost)" else currentHost.ifBlank { "Auto Radar" }
+                binding.btnAppMode.text = "MODE: CLIENT ($hostLabel) ▼"
+                binding.btnAppMode.setTextColor(Color.parseColor("#00E5FF"))
+            }
+        }
+        refreshDashboardState()
+    }
+
+    private fun showModeSelectionDialog() {
+        val modes = arrayOf(
+            "📱 Standalone (1 HP Langsung ke Motor)",
+            "🚀 Server (HP Utama - Host Android Auto & Hotspot)",
+            "📡 Client (HP Layar / Donor - Penerima Proyeksi)"
+        )
+        val currentIndex = when (AppConfig.appMode) {
+            AppConfig.AppMode.STANDALONE -> 0
+            AppConfig.AppMode.SERVER -> 1
+            AppConfig.AppMode.CLIENT -> 2
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Pilih Mode Operasional UMOX")
+            .setSingleChoiceItems(modes, currentIndex) { dialog, which ->
+                dialog.dismiss()
+                when (which) {
+                    0 -> {
+                        AppConfig.saveAppMode(this, AppConfig.AppMode.STANDALONE, "127.0.0.1", "Lokal")
+                        appendLog("Mode diubah ke: STANDALONE (127.0.0.1)")
+                        updateModeUi()
+                    }
+                    1 -> {
+                        AppConfig.saveAppMode(this, AppConfig.AppMode.SERVER)
+                        appendLog("Mode diubah ke: SERVER (Host Android Auto & Radar)")
+                        updateModeUi()
+                    }
+                    2 -> {
+                        showServerSelectionDialog()
+                    }
+                }
+            }
+            .setNegativeButton("Batal", null)
+            .show()
+    }
+
+    private fun showServerSelectionDialog() {
+        val servers = discoveredServers.values.toList()
+        val items = mutableListOf<String>()
+        val actions = mutableListOf<() -> Unit>()
+
+        val currentHost = AppConfig.serverHostIp
+
+        // 1. Tampilkan server-server yang terdeteksi via Radar UDP
+        if (servers.isNotEmpty()) {
+            items.add("--- SERVER TERDETEKSI DI JARINGAN ---")
+            actions.add {}
+            for (s in servers) {
+                val isSelected = s.ip == currentHost
+                val badge = if (isSelected) " [✔ Aktif]" else ""
+                val aaBadge = if (s.isAaActive) " • AA Siap ✓" else " • Menunggu AA"
+                items.add("📡 ${s.name} (${s.ip}:${s.port})$aaBadge$badge")
+                actions.add {
+                    AppConfig.saveAppMode(this, AppConfig.AppMode.CLIENT, s.ip, s.name)
+                    appendLog("✔ Server dipilih: ${s.name} (${s.ip}:${s.port})")
+                    Toast.makeText(this, "✔ Terhubung ke ${s.name}!", Toast.LENGTH_SHORT).show()
+                    isAaServerListening = s.isAaActive
+                    updateModeUi()
+                }
+            }
+        }
+
+        // 2. Gateway Hotspot Otomatis jika terdeteksi
+        val detectedGateway = getWifiGatewayIp()
+        if (!detectedGateway.isNullOrBlank() && servers.none { it.ip == detectedGateway }) {
+            items.add("🌐 Host Gateway Hotspot: $detectedGateway:5277")
+            actions.add {
+                AppConfig.saveAppMode(this, AppConfig.AppMode.CLIENT, detectedGateway, "Hotspot Host")
+                appendLog("✔ Target Server diatur ke Gateway Hotspot: $detectedGateway:5277")
+                Toast.makeText(this, "✔ Terhubung ke Gateway $detectedGateway!", Toast.LENGTH_SHORT).show()
+                updateModeUi()
+            }
+        }
+
+        // 3. Opsi Input Manual
+        items.add("✏️ Masukkan Alamat IP Manual...")
+        actions.add {
+            showManualIpInputDialog()
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Pilih Server Android Auto (HP Utama)")
+            .setItems(items.toTypedArray()) { dialog, which ->
+                dialog.dismiss()
+                if (which in actions.indices) {
+                    actions[which].invoke()
+                }
+            }
+            .setPositiveButton("Pindai Ulang Radar") { _, _ ->
+                discoveredServers.clear()
+                peerDiscovery.stopListening()
+                updateModeUi()
+                showServerSelectionDialog()
+            }
+            .setNeutralButton("📶 Hotspot") { _, _ ->
+                showHotspotConfigDialog()
+            }
+            .setNegativeButton("Tutup", null)
+            .show()
+    }
+
+    private fun showManualIpInputDialog() {
+        val autoGateway = getWifiGatewayIp() ?: ""
+        val currentIp = if (AppConfig.serverHostIp.isNotBlank() && AppConfig.serverHostIp != "127.0.0.1") {
+            AppConfig.serverHostIp
+        } else {
+            autoGateway
+        }
+        val input = EditText(this).apply {
+            setText(currentIp)
+            hint = "Contoh: 192.168.43.1"
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Alamat IP Server Android Auto")
+            .setMessage("Masukkan alamat IP HP Utama yang menjalankan Server Android Auto:")
+            .setView(input)
+            .setPositiveButton("Simpan") { _, _ ->
+                val ip = input.text.toString().trim()
+                if (ip.isNotBlank()) {
+                    AppConfig.saveAppMode(this, AppConfig.AppMode.CLIENT, ip, "Manual")
+                    appendLog("Mode diubah ke: CLIENT (Target Server: $ip:5277)")
+                    updateModeUi()
+                }
+            }
+            .setNegativeButton("Batal", null)
+            .show()
+    }
+
+    private fun showHotspotConfigDialog() {
+        val layout = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(50, 30, 50, 10)
+        }
+
+        val tvInfo = android.widget.TextView(this).apply {
+            text = "Kredensial Wi-Fi Hotspot HP Layar (Receiver):\nHP Utama akan menyambung ke jaringan ini secara nirkabel untuk Android Auto."
+            setTextColor(Color.parseColor("#8B949E"))
+            textSize = 12f
+            setPadding(0, 0, 0, 20)
+        }
+        layout.addView(tvInfo)
+
+        val etSsid = EditText(this).apply {
+            hint = "Nama Hotspot (SSID)"
+            setText(AppConfig.hotspotSsid)
+        }
+        layout.addView(etSsid)
+
+        val etPass = EditText(this).apply {
+            hint = "Sandi Hotspot (Minimal 8 karakter)"
+            setText(AppConfig.hotspotPass)
+        }
+        layout.addView(etPass)
+
+        AlertDialog.Builder(this)
+            .setTitle("📶 Pengaturan Hotspot Android Auto")
+            .setView(layout)
+            .setPositiveButton("Simpan") { _, _ ->
+                val newSsid = etSsid.text.toString().trim()
+                val newPass = etPass.text.toString().trim()
+                if (newSsid.isNotBlank() && newPass.length >= 8) {
+                    AppConfig.saveHotspotCredentials(this, newSsid, newPass)
+                    Toast.makeText(this, "✔ Kredensial Hotspot disimpan ($newSsid)", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "⚠ Sandi minimal harus 8 karakter!", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNeutralButton("⚙ Buka Hotspot HP") { _, _ ->
+                try {
+                    val intent = Intent("android.settings.TETHER_SETTINGS")
+                    startActivity(intent)
+                } catch (_: Exception) {
+                    try {
+                        startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+                    } catch (_: Exception) {}
+                }
+            }
+            .setNegativeButton("Batal", null)
+            .show()
+    }
+
+    private fun showAaSettingsMenuDialog() {
+        val options = mutableListOf<String>()
+        val actions = mutableListOf<() -> Unit>()
+
+        options.add("📶 Konfigurasi Hotspot Android Auto (SSID / Sandi)")
+        actions.add { showHotspotConfigDialog() }
+
+        if (AppConfig.appMode == AppConfig.AppMode.CLIENT) {
+            options.add("🔍 Cari & Pilih Server Proyeksi (Client)")
+            actions.add { showServerSelectionDialog() }
+        } else {
+            options.add("⚙ Buka Pengaturan Android Auto (Developer HU Server)")
+            actions.add {
+                pendingAutoStartAaAfterSettings = true
+                openAndroidAutoHeadUnitServer()
+            }
+        }
+
+        options.add("🔄 Ganti Mode Operasi (Standalone / Server / Client)")
+        actions.add { showModeSelectionDialog() }
+
+        AlertDialog.Builder(this)
+            .setTitle("⚙ Pengaturan Android Auto & Jaringan")
+            .setItems(options.toTypedArray()) { _, which ->
+                actions[which].invoke()
+            }
+            .setNegativeButton("Tutup", null)
+            .show()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun showPrimaryPhoneSelectionDialog() {
+        val btAdapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+        if (btAdapter == null || !btAdapter.isEnabled) {
+            Toast.makeText(this, "Silakan aktifkan Bluetooth terlebih dahulu", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val bonded = btAdapter.bondedDevices.toList()
+        if (bonded.isEmpty()) {
+            Toast.makeText(
+                this,
+                "Belum ada HP yang dipasangkan (paired) via Bluetooth.\nSilakan pasangkan HP Utama dengan HP ini di Pengaturan Bluetooth HP.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        val items = bonded.map { dev ->
+            val name = dev.name ?: "Ponsel Tanpa Nama"
+            val mac = dev.address
+            val isCurrent = mac.equals(AppConfig.primaryPhoneBtMac, ignoreCase = true)
+            val badge = if (isCurrent) " [DISIMPAN]" else ""
+            "$name\n$mac$badge"
+        }.toTypedArray()
+
+        var selectedIndex = bonded.indexOfFirst {
+            it.address.equals(AppConfig.primaryPhoneBtMac, ignoreCase = true)
+        }.coerceAtLeast(0)
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Pilih HP Utama (Bangunkan Android Auto)")
+            .setSingleChoiceItems(items, selectedIndex) { _, which ->
+                selectedIndex = which
+            }
+            .setPositiveButton("⚡ Bangunkan (Poke)") { _, _ ->
+                val chosen = bonded[selectedIndex]
+                val name = chosen.name ?: chosen.address
+                AppConfig.savePrimaryPhoneBt(this, chosen.address, name)
+                if (!ScreenCastService.isStreamingActive) {
+                    appendLog("🔌 Mempersiapkan Receiver Android Auto...")
+                    startAndroidAutoService()
+                }
+                appendLog("⚡ Mengirim sinyal bangun (HFP Poke) ke HP Utama: $name (${chosen.address})...")
+                wppBluetoothServer.wakePhone(chosen.address) { success, msg ->
+                    runOnUiThread {
+                        if (success) {
+                            Toast.makeText(this@MainActivity, "✔ Sinyal bangun terkirim ke $name!", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(this@MainActivity, "⚠ Gagal wake: $msg", Toast.LENGTH_LONG).show()
+                        }
+                        refreshDashboardState()
+                    }
+                }
+            }
+            .setNeutralButton("📶 Hotspot") { _, _ ->
+                showHotspotConfigDialog()
+            }
+            .setNegativeButton("Tutup", null)
+            .show()
+    }
+
+    private fun showMotorSelectionDialog() {
+        if (AppConfig.appMode == AppConfig.AppMode.SERVER) {
+            Toast.makeText(
+                this,
+                "Mode Server aktif: Hubungkan motor dari HP Penerima / Layar!",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        // Jalankan pemindaian BLE dan Wi-Fi Direct
+        hasAutoConnectedBle = false
+        bleSniffer.startScan()
+        wifiP2pProbe.registerAndListen()
+        wifiP2pProbe.discoverPeers()
+
+        val items = mutableListOf<String>()
+        val actions = mutableListOf<() -> Unit>()
+
+        // 1. Tampilkan opsi motor tersimpan (jika ada)
+        if (AppConfig.targetBleMac.isNotBlank() || AppConfig.targetP2pMac.isNotBlank()) {
+            val savedName = AppConfig.targetBleName.ifBlank { AppConfig.targetP2pName }.ifBlank { "Motor Tersimpan" }
+            val savedMac = AppConfig.targetBleMac.ifBlank { AppConfig.targetP2pMac }
+            items.add("⭐ Hubungkan ke: $savedName ($savedMac)")
+            actions.add {
+                appendLog("⚡ Menghubungkan ke motor tersimpan: $savedName ($savedMac)...")
+                if (AppConfig.targetBleMac.isNotBlank()) {
+                    val dev = discoveredBleDevices[AppConfig.targetBleMac]?.device
+                    if (dev != null) {
+                        hasAutoConnectedBle = true
+                        bleSniffer.stopScan()
+                        gattExplorer.connectAndExplore(dev)
+                    } else {
+                        bleSniffer.startScan()
+                        Toast.makeText(this, "Mencari sinyal $savedName di sekitar...", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                if (AppConfig.targetP2pMac.isNotBlank()) {
+                    wifiP2pProbe.connectToMotor(AppConfig.targetP2pMac)
+                }
+            }
+        }
+
+        // 2. Daftar Perangkat BLE yang terdeteksi
+        val bleList = discoveredBleDevices.values.sortedByDescending { it.rssi }
+        if (bleList.isNotEmpty()) {
+            items.add("--- DAFTAR MOTOR BLE TERDETEKSI ---")
+            actions.add {}
+            for (ble in bleList) {
+                val isCandidate = ble.isCandidate
+                val isCurrent = ble.address.equals(AppConfig.targetBleMac, ignoreCase = true)
+                val badge = if (isCurrent) " [✔ Tersimpan]" else if (isCandidate) " [★ Cocok]" else ""
+                items.add("📡 ${ble.name} (${ble.address}) ${ble.rssi} dBm$badge")
+                actions.add {
+                    AppConfig.saveBleMac(this, ble.address, ble.name)
+                    hasAutoConnectedBle = true
+                    appendLog("✔ Motor dipilih: ${ble.name} (${ble.address}). Tersimpan sebagai motor utama.")
+                    Toast.makeText(this, "✔ Terhubung ke ${ble.name}!", Toast.LENGTH_SHORT).show()
+                    bleSniffer.stopScan()
+                    gattExplorer.connectAndExplore(ble.device)
+                    refreshDashboardState()
+                }
+            }
+        }
+
+        // 3. Daftar Perangkat Wi-Fi Direct yang terdeteksi
+        val p2pList = discoveredP2pPeers.values.toList()
+        if (p2pList.isNotEmpty()) {
+            items.add("--- DAFTAR WI-FI DIRECT TERDETEKSI ---")
+            actions.add {}
+            for (p2p in p2pList) {
+                val isCurrent = p2p.deviceAddress.equals(AppConfig.targetP2pMac, ignoreCase = true)
+                val badge = if (isCurrent) " [✔ Tersimpan]" else ""
+                items.add("📶 ${p2p.deviceName} (${p2p.deviceAddress})$badge")
+                actions.add {
+                    AppConfig.saveP2pMac(this, p2p.deviceAddress, p2p.deviceName)
+                    appendLog("✔ Wi-Fi Direct dipilih: ${p2p.deviceName} (${p2p.deviceAddress}).")
+                    Toast.makeText(this, "✔ Menghubungkan ke ${p2p.deviceName}!", Toast.LENGTH_SHORT).show()
+                    wifiP2pProbe.connectToMotor(p2p.deviceAddress)
+                    refreshDashboardState()
+                }
+            }
+        }
+
+        if (bleList.isEmpty() && p2pList.isEmpty()) {
+            items.add("⏳ Sedang memindai perangkat di sekitar... Ketuk 'Pindai Ulang' jika motor belum muncul.")
+            actions.add {
+                bleSniffer.startScan()
+                wifiP2pProbe.discoverPeers()
+            }
+        }
+
+        val builder = AlertDialog.Builder(this)
+            .setTitle("Pilih Motor / Speedometer")
+            .setItems(items.toTypedArray()) { dialog, which ->
+                dialog.dismiss()
+                if (which in actions.indices) {
+                    actions[which].invoke()
+                }
+            }
+            .setPositiveButton("Pindai Ulang") { _, _ ->
+                discoveredBleDevices.clear()
+                discoveredP2pPeers.clear()
+                bleSniffer.startScan()
+                wifiP2pProbe.discoverPeers()
+                showMotorSelectionDialog()
+            }
+            .setNegativeButton("Tutup", null)
+
+        if (AppConfig.targetBleMac.isNotBlank() || AppConfig.targetP2pMac.isNotBlank()) {
+            builder.setNeutralButton("Lupakan Motor") { _, _ ->
+                AppConfig.resetMotorPairing(this)
+                hasAutoConnectedBle = false
+                appendLog("✔ Pasangan motor direset. Silakan pilih motor baru.")
+                Toast.makeText(this, "Pasangan motor dihapus", Toast.LENGTH_SHORT).show()
+                refreshDashboardState()
+            }
+        }
+
+        builder.show()
+    }
+
     private fun setupClickListeners() {
+        // Tombol Pemilihan Mode (STANDALONE, SERVER, CLIENT)
+        binding.btnAppMode.setOnClickListener {
+            showModeSelectionDialog()
+        }
+
         // Info Kunci Publik Built-in (Google-Android-Reference RSA-2048 + X.509)
         binding.tvAaBadge.setOnClickListener {
             val msg = "🔑 Kunci Head Unit Publik (Google-Android-Reference RSA-2048 + X.509, berlaku s/d 2046) sudah tertanam 100% Built-in di UMOX. Tidak perlu unduh file dari GitHub!"
@@ -668,19 +1395,36 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
         }
 
-        // Langkah 1: Buka Pengaturan Server Unit Kepala Android Auto
-        binding.btnOpenAaSettings.setOnClickListener {
-            pendingAutoStartAaAfterSettings = true
-            openAndroidAutoHeadUnitServer()
+        // Langkah 1: Buka Pengaturan Server Unit Kepala Android Auto / Pilih Server Client
+        binding.btnTriggerWirelessAa.setOnClickListener {
+            if (!ScreenCastService.isStreamingActive) {
+                appendLog("🔌 Mempersiapkan Receiver Android Auto sebelum membangunkan ponsel...")
+                startAndroidAutoService()
+            }
+            showPrimaryPhoneSelectionDialog()
         }
 
-        // Langkah 2: Auto-Link Motor (Scan BLE + Connect Wi-Fi Direct)
+        binding.btnScanUsbAoa.setOnClickListener {
+            if (!ScreenCastService.isStreamingActive) {
+                appendLog("🔌 Mempersiapkan Receiver Android Auto...")
+                startAndroidAutoService()
+            }
+            appendLog("🔌 Memindai kabel USB Type-C / OTG untuk aktivasi otomatis AOA 2.0...")
+            usbAoaManager.scanAndConnect()
+        }
+
+        binding.btnOpenAaSettings.setOnClickListener {
+            if (AppConfig.appMode == AppConfig.AppMode.CLIENT) {
+                showServerSelectionDialog()
+            } else {
+                pendingAutoStartAaAfterSettings = true
+                openAndroidAutoHeadUnitServer()
+            }
+        }
+
+        // Langkah 2: Pilih & Hubungkan Motor (BLE & Wi-Fi Direct)
         binding.btnAutoLinkMotor.setOnClickListener {
-            appendLog("⚡ Auto-Link: Memindai BLE & menghubungkan Wi-Fi Direct motor...")
-            hasAutoConnectedBle = false
-            bleSniffer.startScan()
-            wifiP2pProbe.registerAndListen()
-            wifiP2pProbe.connectToMotor()
+            showMotorSelectionDialog()
         }
 
         // Tombol Resolusi Konflik OMOWAY / Reopen Navigasi Motor (WayXAuto 0.2.5)
@@ -690,6 +1434,15 @@ class MainActivity : AppCompatActivity() {
 
         // Primary CTA: Mulai / Restart Android Auto 60 FPS
         binding.btnStartAndroidAuto.setOnClickListener {
+            if (AppConfig.appMode == AppConfig.AppMode.SERVER) {
+                Toast.makeText(
+                    this,
+                    "Mode Server aktif: Buka 'Titik Tiga -> Mulai server unit kepala' di AA. Proyeksi dijalankan dari HP Layar!",
+                    Toast.LENGTH_LONG
+                ).show()
+                openAndroidAutoHeadUnitServer()
+                return@setOnClickListener
+            }
             startAndroidAutoService()
         }
 
@@ -781,8 +1534,7 @@ class MainActivity : AppCompatActivity() {
 
         // Tombol Utilitas Jaringan Manual
         binding.btnScanBle.setOnClickListener {
-            hasAutoConnectedBle = false
-            bleSniffer.startScan()
+            showMotorSelectionDialog()
         }
 
         binding.btnConnectWifi.setOnClickListener {
@@ -877,6 +1629,8 @@ class MainActivity : AppCompatActivity() {
                 ScreenCastService.activeAaReceiver?.isVideoStreaming == true
             ) {
                 true
+            } else if (AppConfig.appMode == AppConfig.AppMode.CLIENT) {
+                AppConfig.serverHostIp.isNotBlank() && AppConfig.serverHostIp != "127.0.0.1"
             } else {
                 try {
                     ServerSocket().use { ss ->
@@ -897,7 +1651,7 @@ class MainActivity : AppCompatActivity() {
                     false
                 }
             }
-            val p2pActive = wifiP2pProbe.isGroupConnected
+            val p2pActive = if (AppConfig.appMode == AppConfig.AppMode.SERVER) false else wifiP2pProbe.isGroupConnected
             if (isAaServerListening != active || isMotorNetworkReady != p2pActive) {
                 isAaServerListening = active
                 isMotorNetworkReady = p2pActive
@@ -905,8 +1659,12 @@ class MainActivity : AppCompatActivity() {
                     refreshDashboardState()
                     if (active && pendingAutoStartAaAfterSettings && !ScreenCastService.isStreamingActive) {
                         pendingAutoStartAaAfterSettings = false
-                        appendLog("★ Server Unit Kepala 5277 terdeteksi aktif! Memulai Android Auto otomatis...")
-                        startAndroidAutoService()
+                        if (AppConfig.appMode != AppConfig.AppMode.SERVER) {
+                            appendLog("★ Server Unit Kepala 5277 terdeteksi aktif! Memulai Android Auto otomatis...")
+                            startAndroidAutoService()
+                        } else {
+                            appendLog("★ Server Unit Kepala 5277 aktif! Radar memancarkan status SIAP ke HP Donor.")
+                        }
                     }
                 }
             }
@@ -974,33 +1732,73 @@ class MainActivity : AppCompatActivity() {
         val displayKbps = if (bikeProjecting && netKbps > 0) netKbps else encKbps
 
         // 1. Update Step 1 (Server AA 5277 - Auto-Green begitu aktif!)
-        val aaReady = isAaServerListening || (isStreaming && mode == StreamMode.ANDROID_AUTO && totalFrames > 0)
-        binding.dotStepAa.backgroundTintList = ColorStateList.valueOf(
-            Color.parseColor(if (aaReady) "#00E676" else "#FFB300")
-        )
-        binding.tvStepAaStatus.text = if (aaReady) {
-            "✔ Server Unit Kepala Aktif (127.0.0.1:5277) · Kunci Built-in Siap"
+        val isServer = AppConfig.appMode == AppConfig.AppMode.SERVER
+        val isClient = AppConfig.appMode == AppConfig.AppMode.CLIENT
+        val isUsbAoaActive = ScreenCastService.activeAaReceiver?.currentTransport is UsbAoaTransport
+        val isWirelessActive = ScreenCastService.activeAaReceiver?.currentTransport is com.umox.app.aa.AaSocketTransport
+
+        binding.tvUsbAoaBadge.text = if (isUsbAoaActive) "🔌 USB AOA: PROYEKSI AKTIF" else "🔌 USB AOA: SIAGA"
+        binding.tvUsbAoaBadge.setTextColor(Color.parseColor(if (isUsbAoaActive) "#00E676" else "#00E5FF"))
+
+        val phoneLabel = if (AppConfig.primaryPhoneBtName.isNotBlank()) AppConfig.primaryPhoneBtName else "SIAGA"
+        binding.tvWppBadge.text = if (isWirelessActive) "📡 WIRELESS: AKTIF" else "📡 BT WPP: $phoneLabel"
+        binding.tvWppBadge.setTextColor(Color.parseColor(if (isWirelessActive) "#00E676" else "#00E5FF"))
+
+        val aaReady = if (isServer) {
+            true
+        } else if (isUsbAoaActive) {
+            true
+        } else if (isClient) {
+            (isStreaming && mode == StreamMode.ANDROID_AUTO) || isAaServerListening
         } else {
-            "Ketuk 'Buka AA' → Titik 3 (⋮) → Mulai server unit kepala (otomatis hijau)"
+            isAaServerListening || (isStreaming && mode == StreamMode.ANDROID_AUTO && totalFrames > 0)
+        }
+        binding.dotStepAa.backgroundTintList = ColorStateList.valueOf(
+            Color.parseColor(if (aaReady) "#00E676" else if (isClient) "#00E5FF" else "#FFB300")
+        )
+        val myIp = getWifiIpAddress() ?: "127.0.0.1"
+        binding.tvStepAaStatus.text = if (isServer) {
+            "🚀 MODE SERVER: Memancarkan radar ke HP Layar ($myIp:5277)"
+        } else if (isUsbAoaActive) {
+            "✔ Android Auto Aktif via Kabel USB AOA (60 FPS)"
+        } else if (isClient) {
+            val sLabel = if (AppConfig.serverHostName.isNotBlank()) AppConfig.serverHostName else AppConfig.serverHostIp
+            if (isStreaming && mode == StreamMode.ANDROID_AUTO && ScreenCastService.activeAaReceiver?.isVideoStreaming == true) {
+                "✔ Terhubung ke Server ($sLabel:5277) · Video Aktif"
+            } else {
+                "📡 Radar Client: Terhubung ke $sLabel:5277 (Tekan Mulai)"
+            }
+        } else if (aaReady) {
+            val transportName = ScreenCastService.activeAaReceiver?.currentTransport?.name ?: "127.0.0.1:5277"
+            "✔ Android Auto Terhubung & Siap ($transportName)"
+        } else {
+            "Otomatis Siap: Tancapkan USB Type-C atau ketuk 'Bangunkan BT'"
         }
         binding.tvStepAaStatus.setTextColor(
             Color.parseColor(if (aaReady) "#00E676" else "#8B949E")
         )
+        binding.btnOpenAaSettings.text = "⚙"
 
         // 2. Update Step 2 (Motor BLE + Wi-Fi 192.168.2.1)
         val motorReady = isMotorNetworkReady || wifiP2pProbe.isGroupConnected || clusterConnected
         binding.dotStepMotor.backgroundTintList = ColorStateList.valueOf(
             Color.parseColor(if (motorReady) "#00E676" else "#00E5FF")
         )
+        val pairedMotorName = AppConfig.targetBleName.ifBlank { AppConfig.targetP2pName }
+        val pairedMotorMac = AppConfig.targetBleMac.ifBlank { AppConfig.targetP2pMac }
         binding.tvStepMotorStatus.text = if (bikeProjecting) {
             "✔ Motor Menerima Gambar (192.168.2.1:9528 · $totalSentFrames frame)"
         } else if (clusterConnected) {
             "✔ Terhubung ke TCP Motor (Menunggu konfirmasi layar Navigasi motor...)"
         } else if (motorReady) {
             "✔ Jaringan Motor Siap ($extractedSsid • 192.168.2.1)"
+        } else if (pairedMotorMac.isNotBlank()) {
+            val label = if (pairedMotorName.isNotBlank()) "$pairedMotorName ($pairedMotorMac)" else pairedMotorMac
+            "Motor Dipilih: $label · Menghubungkan..."
         } else {
-            "Target: $extractedSsid • Auto-reconnect latar belakang aktif"
+            "Belum ada motor dipilih · Ketuk 'PILIH MOTOR' untuk memindai"
         }
+        binding.btnAutoLinkMotor.text = "PILIH MOTOR"
 
         // 3. Update Conflict Banner (OMOWAY App Conflict / Reopen Navigation Hint - WayXAuto 0.2.5)
         val competing = competingAppPair
@@ -1103,11 +1901,19 @@ class MainActivity : AppCompatActivity() {
             )
             binding.tvStreamStatsBadge.text = "960×360 • 60 FPS ZERO-DELAY"
             binding.tvStreamStatsBadge.setTextColor(Color.parseColor("#8B949E"))
-            binding.tvStepStreamStatus.text = "Siaga • Tekan Mulai untuk menjalankan pipeline 60 FPS"
+            binding.tvStepStreamStatus.text = if (isServer) {
+                "Mode Server Aktif · Menunggu HP Donor terhubung & memproyeksikan video"
+            } else {
+                "Siaga • Tekan Mulai untuk menjalankan pipeline 60 FPS"
+            }
             binding.tvStepStreamStatus.setTextColor(Color.parseColor("#8B949E"))
 
             binding.btnStopCast.visibility = View.GONE
-            binding.btnStartAndroidAuto.text = "🚀  MULAI ANDROID AUTO (60 FPS)"
+            binding.btnStartAndroidAuto.text = if (isServer) {
+                "📡  RADAR SERVER AKTIF (BUKA AA)"
+            } else {
+                "🚀  MULAI ANDROID AUTO (60 FPS)"
+            }
         }
     }
 
@@ -1127,6 +1933,23 @@ class MainActivity : AppCompatActivity() {
             startForegroundService(serviceIntent)
         } else {
             startService(serviceIntent)
+        }
+
+        // Jika terdapat transport USB yang sedang menunggu, sambungkan ke receiver begitu siap
+        pendingUsbTransport?.let { transport ->
+            uiHandler.postDelayed(object : Runnable {
+                var attempts = 0
+                override fun run() {
+                    val receiver = ScreenCastService.activeAaReceiver
+                    if (receiver != null) {
+                        appendLog("★ Menyambungkan transport USB ke receiver Android Auto...")
+                        receiver.attachTransport(transport)
+                        pendingUsbTransport = null
+                    } else if (attempts++ < 15) {
+                        uiHandler.postDelayed(this, 200)
+                    }
+                }
+            }, 300)
         }
     }
 
@@ -1212,6 +2035,10 @@ class MainActivity : AppCompatActivity() {
     private fun appendLog(message: String) {
         val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
         val line = "[$time] $message\n"
+        if (binding.tvConsoleLog.length() > 8000) {
+            val text = binding.tvConsoleLog.text.toString()
+            binding.tvConsoleLog.text = text.substring(text.length - 4000)
+        }
         binding.tvConsoleLog.append(line)
         binding.scrollConsole.post {
             val delta = binding.tvConsoleLog.bottom - (binding.scrollConsole.height + binding.scrollConsole.scrollY)
@@ -1228,8 +2055,11 @@ class MainActivity : AppCompatActivity() {
         probeExecutor.shutdownNow()
         activePreviewSurface?.release()
         activePreviewSurface = null
+        peerDiscovery.stopAll()
         bleSniffer.stopScan()
         gattExplorer.disconnect()
         wifiP2pProbe.unregister()
+        try { usbAoaManager.stopListening() } catch (_: Exception) {}
+        try { wppBluetoothServer.stop() } catch (_: Exception) {}
     }
 }

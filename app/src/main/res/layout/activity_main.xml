@@ -75,6 +75,19 @@
                 android:orientation="vertical">
 
                 <TextView
+                    android:id="@+id/btnAppMode"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="4dp"
+                    android:background="@drawable/bg_status_pill"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="4dp"
+                    android:text="MODE: STANDALONE ▼"
+                    android:textColor="#FFB74D"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <TextView
                     android:id="@+id/tvConnectionBadge"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -154,64 +167,151 @@
                     android:textStyle="bold" />
             </LinearLayout>
 
-            <!-- STEP 1: Server Unit Kepala Android Auto -->
+            <!-- STEP 1: Aktivasi Otomatis Android Auto (Dual: USB AOA 2.0 & Wireless WPP) -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
                 android:background="@drawable/bg_glass_inner"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
+                android:orientation="vertical"
                 android:paddingHorizontal="12dp"
                 android:paddingVertical="10dp">
 
-                <View
-                    android:id="@+id/dotStepAa"
-                    android:layout_width="10dp"
-                    android:layout_height="10dp"
-                    android:background="@drawable/bg_dot_indicator" />
-
                 <LinearLayout
-                    android:layout_width="0dp"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="10dp"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <View
+                        android:id="@+id/dotStepAa"
+                        android:layout_width="10dp"
+                        android:layout_height="10dp"
+                        android:background="@drawable/bg_dot_indicator" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="1. Aktivasi Android Auto (USB / Wireless)"
+                            android:textColor="#E6EDF3"
+                            android:textSize="12.5sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/tvStepAaStatus"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="1dp"
+                            android:text="Otomatis siap: Tancap kabel USB atau sentuh Bangunkan BT"
+                            android:textColor="#8B949E"
+                            android:textSize="11sp" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- Status Pills -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
 
                     <TextView
+                        android:id="@+id/tvUsbAoaBadge"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="1. Server Unit Kepala Android Auto"
-                        android:textColor="#E6EDF3"
-                        android:textSize="12.5sp"
+                        android:background="@drawable/bg_status_pill"
+                        android:paddingHorizontal="7dp"
+                        android:paddingVertical="3dp"
+                        android:text="🔌 USB AOA: SIAGA"
+                        android:textColor="#00E5FF"
+                        android:textSize="9.5sp"
                         android:textStyle="bold" />
 
                     <TextView
-                        android:id="@+id/tvStepAaStatus"
+                        android:id="@+id/tvWppBadge"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="1dp"
-                        android:text="Mengecek port lokal 127.0.0.1:5277..."
-                        android:textColor="#8B949E"
-                        android:textSize="11sp" />
+                        android:layout_marginStart="6dp"
+                        android:background="@drawable/bg_status_pill"
+                        android:paddingHorizontal="7dp"
+                        android:paddingVertical="3dp"
+                        android:text="📡 BT WPP: AKTIF"
+                        android:textColor="#00E676"
+                        android:textSize="9.5sp"
+                        android:textStyle="bold" />
                 </LinearLayout>
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnOpenAaSettings"
-                    style="@style/Widget.Material3.Button.TonalButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="36dp"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:paddingHorizontal="12dp"
-                    android:text="Buka AA"
-                    android:textColor="#00E5FF"
-                    android:textSize="11sp"
-                    android:textStyle="bold"
-                    app:backgroundTint="#162232"
-                    app:cornerRadius="10dp"
-                    app:strokeColor="#2A3E57"
-                    app:strokeWidth="1dp" />
+                <!-- Tombol Aktivasi: Diatur di baris bawah agar tidak terpotong ke kanan -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnTriggerWirelessAa"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_weight="1"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:paddingHorizontal="6dp"
+                        android:text="⚡ Bangunkan BT"
+                        android:textColor="#00E676"
+                        android:textSize="11sp"
+                        android:textStyle="bold"
+                        app:backgroundTint="#162E22"
+                        app:cornerRadius="8dp"
+                        app:strokeColor="#255239"
+                        app:strokeWidth="1dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnScanUsbAoa"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_marginStart="6dp"
+                        android:layout_weight="1"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:paddingHorizontal="6dp"
+                        android:text="🔌 Deteksi USB"
+                        android:textColor="#00E5FF"
+                        android:textSize="11sp"
+                        android:textStyle="bold"
+                        app:backgroundTint="#162232"
+                        app:cornerRadius="8dp"
+                        app:strokeColor="#2A3E57"
+                        app:strokeWidth="1dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnOpenAaSettings"
+                        style="@style/Widget.Material3.Button.TonalButton"
+                        android:layout_width="40dp"
+                        android:layout_height="36dp"
+                        android:layout_marginStart="6dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:padding="0dp"
+                        android:text="⚙"
+                        android:textColor="#8B949E"
+                        android:textSize="13sp"
+                        android:textStyle="bold"
+                        app:backgroundTint="#161B22"
+                        app:cornerRadius="8dp"
+                        app:strokeColor="#30363D"
+                        app:strokeWidth="1dp" />
+                </LinearLayout>
             </LinearLayout>
 
             <!-- STEP 2: Koneksi BLE & Wi-Fi Direct Motor -->

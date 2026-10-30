@@ -246,10 +246,17 @@ class ScreenCastService : Service() {
         val bridgeSurface = encoder.startSurfaceBridge()
         mediaEncoder = encoder
 
-        // 2. Nyalakan penerima proyeksi Android Auto (127.0.0.1:5277) langsung ke OpenGL Surface
+        // 2. Nyalakan penerima proyeksi Android Auto (127.0.0.1 atau Server Remote) langsung ke OpenGL Surface
+        val targetAaHost = if (AppConfig.appMode == AppConfig.AppMode.CLIENT) {
+            AppConfig.serverHostIp.ifBlank { "127.0.0.1" }
+        } else {
+            "127.0.0.1"
+        }
+
         val receiver = AaHeadlessReceiver(
             context = applicationContext,
             outputSurface = bridgeSurface,
+            targetHost = targetAaHost,
             onH264Frame = { _, _, _ -> },
             onStatusChanged = { status ->
                 log("[AA] $status")
@@ -259,7 +266,7 @@ class ScreenCastService : Service() {
         }
         aaReceiver = receiver
         activeAaReceiver = receiver
-        log("★ Pipeline Android Auto 60 FPS siap! Menunggu handshake 127.0.0.1:5277 & motor $targetIp...")
+        log("★ Pipeline Android Auto 60 FPS siap! Menunggu handshake $targetAaHost:5277 & motor $targetIp...")
     }
 
     private fun startScreenProjection(
@@ -411,28 +418,35 @@ class ScreenCastService : Service() {
                     val ctrl = controlChannelClient
                     val sock = socketStreamer
 
-                    if (ctrl != null && !ctrl.isConnected) {
-                        val ok = ctrl.connect()
-                        isClusterCtrlConnected = ok
-                    } else {
-                        isClusterCtrlConnected = ctrl?.isConnected == true
-                    }
+                    // Hanya coba sambungkan ke soket motor jika antarmuka Wi-Fi Direct (192.168.2.x) sudah terhubung!
+                    val hasMotorSubnet = WifiDirectNetworkBinder.findLocalSubnetAddress("192.168.2.") != null
+                    if (hasMotorSubnet) {
+                        if (ctrl != null && !ctrl.isConnected) {
+                            val ok = ctrl.connect()
+                            isClusterCtrlConnected = ok
+                        } else {
+                            isClusterCtrlConnected = ctrl?.isConnected == true
+                        }
 
-                    if (sock != null && !sock.isConnected) {
-                        val ok = sock.connect()
-                        isClusterVideoConnected = ok
-                        if (ok) {
-                            lastSentFramesSnapshot = SocketStreamer.totalFramesSentGlobal
-                            lastSentProgressMs = android.os.SystemClock.elapsedRealtime()
-                            if (ctrl?.isProjectionControlReady == true) {
-                                sock.enableSink()
-                                ctrl.sendShowSignal()
+                        if (sock != null && !sock.isConnected) {
+                            val ok = sock.connect()
+                            isClusterVideoConnected = ok
+                            if (ok) {
+                                lastSentFramesSnapshot = SocketStreamer.totalFramesSentGlobal
+                                lastSentProgressMs = android.os.SystemClock.elapsedRealtime()
+                                if (ctrl?.isProjectionControlReady == true) {
+                                    sock.enableSink()
+                                    ctrl.sendShowSignal()
+                                }
+                                mediaEncoder?.requestKeyFrame()
+                                assetPlayer?.requestKeyFrame()
                             }
-                            mediaEncoder?.requestKeyFrame()
-                            assetPlayer?.requestKeyFrame()
+                        } else {
+                            isClusterVideoConnected = sock?.isConnected == true
                         }
                     } else {
-                        isClusterVideoConnected = sock?.isConnected == true
+                        isClusterCtrlConnected = false
+                        isClusterVideoConnected = false
                     }
 
                     val nowMs = android.os.SystemClock.elapsedRealtime()
