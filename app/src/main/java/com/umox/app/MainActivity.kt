@@ -148,6 +148,7 @@ class MainActivity : AppCompatActivity() {
         initManagers()
         setupLivePreviewTexture()
         setupViewportAndBoostControls()
+        setupStreamQualityControls()
         setupClickListeners()
         updateModeUi()
         checkAndRequestPermissions()
@@ -642,6 +643,89 @@ class MainActivity : AppCompatActivity() {
             binding.seekBoostSaturation.progress = (satPct - 100).coerceIn(0, 90)
             isUpdatingSlidersProgrammatically = false
         }
+    }
+
+    private fun setupStreamQualityControls() {
+        syncStreamQualityUi()
+
+        binding.seekStreamQuality.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (!fromUser || isUpdatingSlidersProgrammatically) return
+                val level = (progress + 1).coerceIn(1, 5)
+                applyStreamQualityLevel(level, notifyUser = false)
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                val level = (binding.seekStreamQuality.progress + 1).coerceIn(1, 5)
+                applyStreamQualityLevel(level, notifyUser = true)
+            }
+        })
+
+        binding.btnQualityPresetAntiLag.setOnClickListener {
+            applyStreamQualityLevel(1, notifyUser = true)
+        }
+
+        binding.btnQualityPresetBalanced.setOnClickListener {
+            applyStreamQualityLevel(3, notifyUser = true)
+        }
+
+        binding.btnQualityPresetUltra.setOnClickListener {
+            applyStreamQualityLevel(5, notifyUser = true)
+        }
+    }
+
+    private fun applyStreamQualityLevel(level: Int, notifyUser: Boolean) {
+        AppConfig.setStreamQualityLevel(this, level)
+        syncStreamQualityUi()
+        ScreenCastService.updateStreamQuality(AppConfig.currentBitrate, AppConfig.currentFps)
+        if (notifyUser) {
+            val title = AppConfig.getQualityTitle(level)
+            appendLog("⚙ Kualitas streaming OMOWAY diubah ke: $title")
+        }
+    }
+
+    private fun syncStreamQualityUi() {
+        val level = AppConfig.streamQualityLevel
+        val isUpdating = isUpdatingSlidersProgrammatically
+        isUpdatingSlidersProgrammatically = true
+        binding.seekStreamQuality.progress = (level - 1).coerceIn(0, 4)
+        isUpdatingSlidersProgrammatically = isUpdating
+
+        binding.tvStreamQualityBadge.text = when (level) {
+            1 -> "● LEVEL 1: ANTI-LAG (1.5M)"
+            2 -> "● LEVEL 2: HEMAT (3.5M)"
+            3 -> "● LEVEL 3: HD SEIMBANG (7M)"
+            4 -> "● LEVEL 4: FULL HD (11M)"
+            5 -> "● LEVEL 5: SUPER HD (16M)"
+            else -> "● LEVEL $level"
+        }
+        binding.tvStreamQualityBadge.setTextColor(
+            Color.parseColor(
+                when (level) {
+                    1 -> "#FFB300"
+                    2 -> "#FFD54F"
+                    3 -> "#00E5FF"
+                    4 -> "#00E676"
+                    5 -> "#76FF03"
+                    else -> "#00E5FF"
+                }
+            )
+        )
+        binding.tvStreamQualityBadge.setBackgroundColor(
+            Color.parseColor(
+                when (level) {
+                    1 -> "#241B0E"
+                    2 -> "#241F0E"
+                    3 -> "#122230"
+                    4 -> "#122822"
+                    5 -> "#183015"
+                    else -> "#122230"
+                }
+            )
+        )
+        binding.tvStreamQualityDesc.text = AppConfig.getQualityDescription(level)
     }
 
     private fun initManagers() {
@@ -1244,6 +1328,10 @@ class MainActivity : AppCompatActivity() {
             appendLog(msg)
         }
 
+        val qualityTitle = AppConfig.getQualityTitle()
+        options.add("📊 Kualitas Streaming OMOWAY: $qualityTitle")
+        actions.add { showStreamQualitySelectionDialog() }
+
         options.add("🔄 Ganti Mode Operasi (Standalone / Server / Client)")
         actions.add { showModeSelectionDialog() }
 
@@ -1251,6 +1339,27 @@ class MainActivity : AppCompatActivity() {
             .setTitle("⚙ Pengaturan Android Auto & Jaringan")
             .setItems(options.toTypedArray()) { _, which ->
                 actions[which].invoke()
+            }
+            .setNegativeButton("Tutup", null)
+            .show()
+    }
+
+    private fun showStreamQualitySelectionDialog() {
+        val levels = arrayOf(
+            "Level 1: Anti-Lag / Ringan (1.5M / 30fps)\n(Gambar ringan, prioritas anti-lag saat sinyal lemah)",
+            "Level 2: Hemat & Responsif (3.5M / 45fps)\n(Streaming ringan & hemat baterai)",
+            "Level 3: HD Seimbang (7.0M / 60fps) [Rekomendasi]\n(Optimal ketajaman peta & kelancaran 60 FPS)",
+            "Level 4: Full HD Tajam (11.0M / 60fps)\n(Teks jalan & detail peta sangat tajam)",
+            "Level 5: Super HD Ultra (16.0M / 60fps)\n(Data stream ultra besar ~2 MB/dtk, detail maksimal)"
+        )
+        val currentIndex = (AppConfig.streamQualityLevel - 1).coerceIn(0, 4)
+
+        AlertDialog.Builder(this)
+            .setTitle("Pilih Kualitas Streaming ke OMOWAY")
+            .setSingleChoiceItems(levels, currentIndex) { dialog, which ->
+                val newLevel = which + 1
+                applyStreamQualityLevel(newLevel, notifyUser = true)
+                dialog.dismiss()
             }
             .setNegativeButton("Tutup", null)
             .show()
@@ -1893,21 +2002,22 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 4. Update Live Preview Placeholder & HUD Overlay
+        val qualityTag = "Lv${AppConfig.streamQualityLevel}"
         if (isStreaming && totalFrames > 0) {
             binding.layoutPreviewPlaceholder.visibility = View.GONE
             binding.tvPreviewHudOverlay.text = if (bikeProjecting) {
-                "★ ON BIKE $displayFps FPS • $displayKbps kbps • IDR #$totalIdr"
+                "★ ON BIKE $displayFps FPS • $displayKbps kbps [$qualityTag]"
             } else {
-                "LIVE HP $displayFps FPS • $displayKbps kbps • IDR #$totalIdr"
+                "LIVE HP $displayFps FPS • $displayKbps kbps [$qualityTag]"
             }
             binding.tvPreviewHudOverlay.setTextColor(Color.parseColor("#00E676"))
         } else if (isStreaming) {
             binding.layoutPreviewPlaceholder.visibility = View.VISIBLE
-            binding.tvPreviewHudOverlay.text = "MENYIAPKAN PIPELINE 60 FPS..."
+            binding.tvPreviewHudOverlay.text = "MENYIAPKAN PIPELINE $qualityTag..."
             binding.tvPreviewHudOverlay.setTextColor(Color.parseColor("#FFB300"))
         } else {
             binding.layoutPreviewPlaceholder.visibility = View.VISIBLE
-            binding.tvPreviewHudOverlay.text = "960×360 • 60Hz GOP-6"
+            binding.tvPreviewHudOverlay.text = "960×360 • $qualityTag (${AppConfig.currentBitrate / 1000}k)"
             binding.tvPreviewHudOverlay.setTextColor(Color.parseColor("#00E5FF"))
         }
 

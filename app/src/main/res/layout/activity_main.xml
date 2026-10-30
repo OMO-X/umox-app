@@ -1194,6 +1194,172 @@
             </LinearLayout>
         </LinearLayout>
 
+        <!-- ==================== 2C. KUALITAS STREAMING KE OMOWAY (LEVEL 1 - 5) ==================== -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:background="@drawable/bg_glass_card"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <!-- Header & Badge Status -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:layout_marginBottom="8dp">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="sans-serif-black"
+                        android:letterSpacing="0.04"
+                        android:text="KUALITAS STREAMING OMOWAY"
+                        android:textColor="#E6EDF3"
+                        android:textSize="12.5sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Level 1 (1.5M Anti-Lag) s/d Level 5 (16M Super HD)"
+                        android:textColor="#8B949E"
+                        android:textSize="10.5sp" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tvStreamQualityBadge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="#122822"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="4dp"
+                    android:text="● LEVEL 3: HD SEIMBANG (7M)"
+                    android:textColor="#00E676"
+                    android:textSize="10.5sp"
+                    android:fontFamily="sans-serif-black" />
+            </LinearLayout>
+
+            <!-- 3 Tombol Preset Cepat -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="4dp"
+                android:layout_marginBottom="12dp">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnQualityPresetAntiLag"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="36dp"
+                    android:layout_marginEnd="4dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="⚡ Lv 1: Anti-Lag"
+                    android:textColor="#FFB300"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#241B0E"
+                    app:cornerRadius="9dp"
+                    app:strokeColor="#4A3414"
+                    app:strokeWidth="1dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnQualityPresetBalanced"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="36dp"
+                    android:layout_marginHorizontal="2dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="⚖ Lv 3: HD (7M)"
+                    android:textColor="#00E5FF"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#122230"
+                    app:cornerRadius="9dp"
+                    app:strokeColor="#214059"
+                    app:strokeWidth="1dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnQualityPresetUltra"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="4dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="🌟 Lv 5: Super HD"
+                    android:textColor="#00E676"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#122822"
+                    app:cornerRadius="9dp"
+                    app:strokeColor="#1E4738"
+                    app:strokeWidth="1dp" />
+            </LinearLayout>
+
+            <!-- Slider Level 1 - 5 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginBottom="4dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Lv 1 (1.5M)"
+                    android:textColor="#FFB300"
+                    android:textSize="11sp"
+                    android:fontFamily="sans-serif-black" />
+
+                <SeekBar
+                    android:id="@+id/seekStreamQuality"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:max="4"
+                    android:progress="2"
+                    android:progressTint="#00E5FF"
+                    android:thumbTint="#00E5FF" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Lv 5 (16M)"
+                    android:textColor="#00E676"
+                    android:textSize="11sp"
+                    android:fontFamily="sans-serif-black" />
+            </LinearLayout>
+
+            <!-- Keterangan Dinamis Per Level -->
+            <TextView
+                android:id="@+id/tvStreamQualityDesc"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="#0D1520"
+                android:padding="10dp"
+                android:textColor="#C9D1D9"
+                android:textSize="11sp"
+                android:lineSpacingExtra="2dp"
+                android:text="Level 3: HD Seimbang (7.0 Mbps, 60 FPS) [Rekomendasi]\nKeseimbangan ideal antara ketajaman peta satelit dan kelancaran 60 FPS." />
+        </LinearLayout>
+
         <!-- ==================== 3. MODE ALTERNATIF & KONFIGURASI JARINGAN ==================== -->
         <LinearLayout
             android:layout_width="match_parent"

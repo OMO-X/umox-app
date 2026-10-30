@@ -96,13 +96,13 @@ class SocketStreamer(
     suspend fun connect(): Boolean = withContext(Dispatchers.IO) {
         try {
             disconnect()
-            onLog("Menghubungkan soket video TCP ke $targetIp:$targetPort (Wi-Fi Direct Bound, 16KB Buf)...")
+            onLog("Menghubungkan soket video TCP ke $targetIp:$targetPort (Wi-Fi Direct Bound, 64KB High-Throughput Buf)...")
             val s = WifiDirectNetworkBinder.createBoundSocket(
                 context = context,
                 targetIp = targetIp,
                 targetPort = targetPort,
                 connectTimeoutMs = 2500,
-                sendBufferBytes = 16384
+                sendBufferBytes = 65536
             )
 
             socket = s

@@ -81,6 +81,58 @@ object AppConfig {
     var joystickAsDpad: Boolean = true
 
     /**
+     * Level Kualitas Streaming ke Speedometer OMOWAY (1 - 5)
+     * 1: Anti-Lag / Ringan (1.5 Mbps, 30 FPS - Latensi Terendah / Sinyal Lemah)
+     * 2: Hemat & Responsif (3.5 Mbps, 45 FPS)
+     * 3: HD Seimbang (7.0 Mbps, 60 FPS - Rekomendasi Standard)
+     * 4: Full HD Tajam (11.0 Mbps, 60 FPS - Teks & Peta Sangat Jelas)
+     * 5: Super HD Ultra / Maksimum (16.0 Mbps, 60 FPS - Detail Maksimum Tanpa Kompresi)
+     */
+    var streamQualityLevel: Int = 3
+
+    val currentBitrate: Int
+        get() = when (streamQualityLevel) {
+            1 -> 1_500_000
+            2 -> 3_500_000
+            3 -> 7_000_000
+            4 -> 11_000_000
+            5 -> 16_000_000
+            else -> 7_000_000
+        }
+
+    val currentFps: Int
+        get() = when (streamQualityLevel) {
+            1 -> 30
+            2 -> 45
+            3 -> 60
+            4 -> 60
+            5 -> 60
+            else -> 60
+        }
+
+    fun getQualityTitle(level: Int = streamQualityLevel): String {
+        return when (level) {
+            1 -> "Lv 1: Anti-Lag (1.5M / 30fps)"
+            2 -> "Lv 2: Hemat (3.5M / 45fps)"
+            3 -> "Lv 3: HD Seimbang (7M / 60fps)"
+            4 -> "Lv 4: Full HD (11M / 60fps)"
+            5 -> "Lv 5: Super HD (16M / 60fps)"
+            else -> "Lv 3: HD Seimbang (7M / 60fps)"
+        }
+    }
+
+    fun getQualityDescription(level: Int = streamQualityLevel): String {
+        return when (level) {
+            1 -> "Level 1: Ultra Ringan / Anti-Lag (1.5 Mbps, 30 FPS)\nPrioritas kelancaran mutlak & latensi terendah. Sangat cocok jika Wi-Fi speedometer motor drop/lemah."
+            2 -> "Level 2: Hemat & Responsif (3.5 Mbps, 45 FPS)\nStreaming ringan dan hemat daya baterai dengan pemakaian bandwidth efisien."
+            3 -> "Level 3: HD Seimbang (7.0 Mbps, 60 FPS) [Rekomendasi]\nKeseimbangan ideal antara ketajaman peta satelit dan kelancaran 60 FPS."
+            4 -> "Level 4: Full HD Tajam (11.0 Mbps, 60 FPS)\nDetail grafis, kontur jalan, dan teks nama jalan terlihat tajam."
+            5 -> "Level 5: Super HD Ultra / Maksimum (16.0 Mbps, 60 FPS)\nKualitas gambar tertinggi dengan data stream ultra padat (~2 MB/dtk). Membutuhkan sinyal Wi-Fi yang sangat stabil."
+            else -> "Level 3: HD Seimbang (7.0 Mbps, 60 FPS)"
+        }
+    }
+
+    /**
      * Alamat IP gateway default cluster speedometer / headunit.
      */
     var defaultClusterIp: String = "192.168.2.1"
@@ -167,6 +219,15 @@ object AppConfig {
         OmowayViewportConfig.boostSaturation = sp.getFloat("pref_boost_saturation", 1.35f)
 
         joystickAsDpad = sp.getBoolean("pref_joystick_as_dpad", true)
+        streamQualityLevel = sp.getInt("pref_stream_quality_level", 3).coerceIn(1, 5)
+    }
+
+    fun setStreamQualityLevel(context: Context, level: Int) {
+        streamQualityLevel = level.coerceIn(1, 5)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putInt("pref_stream_quality_level", streamQualityLevel)
+            .apply()
     }
 
     fun setJoystickAsDpad(context: Context, enabled: Boolean) {

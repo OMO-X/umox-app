@@ -125,6 +125,13 @@ class ScreenCastService : Service() {
             currentInstance?.assetPlayer?.requestKeyFrame()
         }
 
+        val activeEncoder: MediaEncoder?
+            get() = currentInstance?.mediaEncoder
+
+        fun updateStreamQuality(bitrate: Int = AppConfig.currentBitrate, fps: Int = AppConfig.currentFps) {
+            currentInstance?.mediaEncoder?.updateBitrate(bitrate, fps)
+        }
+
         @Volatile
         private var currentInstance: ScreenCastService? = null
 
@@ -231,13 +238,13 @@ class ScreenCastService : Service() {
 
         ensureClusterSocketsAndLoop(targetIp, videoPort, ctrlPort)
 
-        // 1. Nyalakan OpenGL ES 2.0 Cropper + Hardware H.264 Encoder (960x360 @ 60 FPS, 4 Mbps, IDR tiap 6 frame) immediately!
+        // 1. Nyalakan OpenGL ES 2.0 Cropper + Hardware H.264 Encoder (${AppConfig.currentFps} FPS, ${AppConfig.currentBitrate / 1000} kbps, IDR tiap 6 frame) immediately!
         val encoder = MediaEncoder(
             width = 960,
             height = 360,
             dpi = 160,
-            bitrate = 4_000_000,
-            fps = 60,
+            bitrate = AppConfig.currentBitrate,
+            fps = AppConfig.currentFps,
             onFrameEncoded = { frame ->
                 onNewEncodedFrame(frame)
             },
@@ -299,8 +306,8 @@ class ScreenCastService : Service() {
             width = 960,
             height = 360,
             dpi = 160,
-            bitrate = 4_000_000,
-            fps = 60,
+            bitrate = AppConfig.currentBitrate,
+            fps = AppConfig.currentFps,
             onFrameEncoded = { frame ->
                 onNewEncodedFrame(frame)
             },

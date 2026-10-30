@@ -44,8 +44,8 @@ class MediaEncoder(
     private val width: Int = 960,
     private val height: Int = 360,
     private val dpi: Int = 160,
-    private val bitrate: Int = 4_000_000,
-    private val fps: Int = 60,
+    bitrate: Int = 3_500_000,
+    fps: Int = 60,
     private val onFrameEncoded: (EncodedVideoFrame) -> Unit,
     private val onFirstSourceFrame: (() -> Unit)? = null,
     private val onLog: (String) -> Unit
@@ -68,6 +68,17 @@ class MediaEncoder(
     @Volatile
     var encodedOutputFrames: Long = 0L
         private set
+
+    @Volatile
+    var currentBitrate: Int = bitrate
+        private set
+
+    @Volatile
+    var currentFps: Int = fps
+        private set
+
+    @Volatile
+    private var activeCodec: MediaCodec? = null
 
     /**
      * Mode 1: Mulai pipeline 60 FPS OpenGL Surface Bridge untuk Android Auto (input 1280x720 -> crop 1120x360 -> encode 960x360).
@@ -102,7 +113,7 @@ class MediaEncoder(
             stop()
             return null
         }
-        onLog("✔ 60 FPS OpenGL H.264 Bridge aktif (${width}x${height} @ ${fps}fps, ${bitrate / 1000} kbps CBR, KeyInt=6).")
+        onLog("✔ 60 FPS OpenGL H.264 Bridge aktif (${width}x${height} @ ${currentFps}fps, ${currentBitrate / 1000} kbps CBR, KeyInt=6).")
         return decoderInputSurface
     }
 
@@ -147,12 +158,32 @@ class MediaEncoder(
             onLog("✖ Gagal memulai Screen Encoder: ${startupError?.message}")
             stop()
         } else {
-            onLog("✔ 60 FPS Zero-Lag Screen Encoder aktif (${width}x${height} @ ${fps}fps, ${bitrate / 1000} kbps CBR, KeyInt=6).")
+            onLog("✔ 60 FPS Zero-Lag Screen Encoder aktif (${width}x${height} @ ${currentFps}fps, ${currentBitrate / 1000} kbps CBR, KeyInt=6).")
         }
     }
 
     fun requestKeyFrame() {
         forceKeyFrameRequested.set(true)
+    }
+
+    /**
+     * Mengatur bitrate dan target frame rate secara real-time pada encoder aktif.
+     */
+    fun updateBitrate(newBitrate: Int, newFps: Int = currentFps) {
+        currentBitrate = newBitrate
+        currentFps = newFps
+        val codec = activeCodec ?: return
+        try {
+            val bundle = Bundle().apply {
+                putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, newBitrate)
+                putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+            }
+            codec.setParameters(bundle)
+            forceKeyFrameRequested.set(true)
+            onLog("⚙ Bitrate encoder disesuaikan ke ${newBitrate / 1000} kbps (${newFps} FPS)")
+        } catch (e: Exception) {
+            onLog("⚠ Gagal mengatur bitrate real-time: ${e.message}")
+        }
     }
 
     private fun runGlEncoderLoop(
@@ -173,6 +204,7 @@ class MediaEncoder(
 
         try {
             codec = createConfiguredEncoder()
+            activeCodec = codec
             encoderInputSurface = codec.createInputSurface()
             codec.start()
 
@@ -213,7 +245,7 @@ class MediaEncoder(
             var spsBytes = ByteArray(0)
             var ppsBytes = ByteArray(0)
 
-            val frameIntervalNs = 1_000_000_000L / fps
+            var frameIntervalNs = 1_000_000_000L / currentFps.coerceIn(15, 60)
             var nextRenderTargetNs = SystemClock.elapsedRealtimeNanos()
 
             while (isRunning.get()) {
@@ -234,10 +266,11 @@ class MediaEncoder(
                     }
                 }
 
-                // 2. Pacing 60 FPS (render frame baru atau ulangi frame terakhir setiap 16.67ms)
+                // 2. Pacing FPS (render frame baru atau ulangi frame terakhir)
+                frameIntervalNs = 1_000_000_000L / currentFps.coerceIn(15, 60)
                 val nowNs = SystemClock.elapsedRealtimeNanos()
                 if (hasReceivedFirstFrame && nowNs >= nextRenderTargetNs) {
-                    // Advance target waktu 60Hz (seperti `z8.java` di WayXAuto)
+                    // Advance target waktu (seperti `z8.java` di WayXAuto)
                     nextRenderTargetNs += frameIntervalNs
                     if (nextRenderTargetNs <= nowNs) {
                         nextRenderTargetNs += (((nowNs - nextRenderTargetNs) / frameIntervalNs) + 1L) * frameIntervalNs
@@ -341,6 +374,7 @@ class MediaEncoder(
                 onLog("⚠ GL Encoder loop terhenti: ${t.message}")
             }
         } finally {
+            activeCodec = null
             decoderInputSurface = null
             try {
                 virtualDisplay?.release()
@@ -376,12 +410,12 @@ class MediaEncoder(
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+            setInteger(MediaFormat.KEY_BIT_RATE, currentBitrate)
+            setInteger(MediaFormat.KEY_FRAME_RATE, currentFps)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
             setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
-            setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
+            setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel41)
             setInteger(MediaFormat.KEY_PRIORITY, 0)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
@@ -396,8 +430,8 @@ class MediaEncoder(
             // Fallback jika device menolak profil eksplisit
             val fallbackFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-                setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+                setInteger(MediaFormat.KEY_BIT_RATE, currentBitrate)
+                setInteger(MediaFormat.KEY_FRAME_RATE, currentFps)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
                 setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
             }
