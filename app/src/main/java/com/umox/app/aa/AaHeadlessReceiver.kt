@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AaHeadlessReceiver(
     private val context: Context,
     private val outputSurface: Surface? = null,
+    private val targetHost: String = com.umox.app.config.AppConfig.serverHostIp.ifBlank { "127.0.0.1" },
     private val onH264Frame: (ByteArray, Int, Int) -> Unit,
     private val onStatusChanged: (String) -> Unit
 ) {
@@ -78,6 +79,10 @@ class AaHeadlessReceiver(
     private val inputExecutor = Executors.newSingleThreadExecutor()
 
     private var activeSocket: Socket? = null
+    @Volatile
+    private var activeTransport: AaProjectionTransport? = null
+    val currentTransport: AaProjectionTransport? get() = activeTransport
+
     private var serverSocket: ServerSocket? = null
     private var tlsEngine: AaTlsEngine? = null
     private var rawOut: OutputStream? = null
@@ -114,13 +119,14 @@ class AaHeadlessReceiver(
 
     fun start() {
         if (isRunning.getAndSet(true)) return
+        startIncomingServerListener()
         executor.execute { connectionLoop() }
     }
 
     fun stop() {
         isRunning.set(false)
         try {
-            if (activeSocket != null) {
+            if (activeTransport != null) {
                 val bye = AaProto.encode { writeVarint(1, 1) }
                 sendEncryptedMessage(CH_CONTROL, false, 0x000F, bye)
             }
@@ -130,11 +136,57 @@ class AaHeadlessReceiver(
         isVideoStreaming = false
         releaseHwDecoder()
         try {
+            activeTransport?.close()
+        } catch (_: Exception) {}
+        try {
             activeSocket?.close()
         } catch (_: Exception) {}
         try {
             serverSocket?.close()
         } catch (_: Exception) {}
+        try {
+            executor.shutdownNow()
+        } catch (_: Exception) {}
+        try {
+            inputExecutor.shutdownNow()
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Memasukkan transport proyeksi khusus (misal: USB AOA 2.0 Bulk Endpoint)
+     * untuk langsung mengambil alih aliran data proyeksi dari TCP.
+     */
+    fun attachTransport(transport: AaProjectionTransport) {
+        if (!isRunning.get()) {
+            start()
+        }
+        executor.execute {
+            try {
+                activeTransport?.close()
+            } catch (_: Exception) {}
+            try {
+                activeSocket?.close()
+            } catch (_: Exception) {}
+
+            activeTransport = transport
+            onStatusChanged("★ Mengalihkan proyeksi ke ${transport.name}...")
+            try {
+                runSession(transport)
+            } catch (e: Exception) {
+                if (isRunning.get()) {
+                    Log.w(TAG, "Sesi transport berakhir: ${e.message}")
+                    onStatusChanged("Sesi ${transport.name} terputus (${e.message})")
+                }
+            } finally {
+                isInputChannelOpen = false
+                isVideoStreaming = false
+                releaseHwDecoder()
+                transport.close()
+                if (activeTransport == transport) {
+                    activeTransport = null
+                }
+            }
+        }
     }
 
     /**
@@ -268,61 +320,77 @@ class AaHeadlessReceiver(
         }
     }
 
+    /**
+     * Listener Server Port 5288 Nirkabel WPP Permanen & Tanpa Jeda.
+     * Siaga 24/7 menerima koneksi dari Android Auto (Gearhead) segera setelah handshake WPP.
+     */
+    private fun startIncomingServerListener() {
+        executor.execute {
+            try {
+                if (serverSocket == null || serverSocket!!.isClosed) {
+                    serverSocket = ServerSocket().apply {
+                        reuseAddress = true
+                        bind(InetSocketAddress("0.0.0.0", AA_PORT_INCOMING))
+                    }
+                }
+                Log.i(TAG, "✔ ServerSocket Android Auto SIAP & MENDENGARKAN pada 0.0.0.0:$AA_PORT_INCOMING (Wireless WPP)")
+                onStatusChanged("★ Server Nirkabel AA Siap (0.0.0.0:$AA_PORT_INCOMING)...")
+
+                while (isRunning.get()) {
+                    try {
+                        val socket = serverSocket?.accept() ?: continue
+                        socket.tcpNoDelay = true
+                        Log.i(TAG, "✔ Sambungan TCP Android Auto masuk dari ${socket.remoteSocketAddress}!")
+                        onStatusChanged("✔ Android Auto terhubung dari ${socket.inetAddress.hostAddress} (Wireless WPP)!")
+                        
+                        val transport = AaSocketTransport(socket)
+                        attachTransport(transport)
+                    } catch (e: Exception) {
+                        if (!isRunning.get()) break
+                        Log.d(TAG, "Exception accept ServerSocket: ${e.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Gagal bind ServerSocket port $AA_PORT_INCOMING: ${e.message}")
+            }
+        }
+    }
+
     private fun connectionLoop() {
-        onStatusChanged("Menghubungkan ke Server Android Auto (127.0.0.1:5277)...")
+        val isRemote = targetHost != "127.0.0.1" && targetHost != "localhost"
+        val hostLabel = if (isRemote) targetHost else "127.0.0.1"
 
         while (isRunning.get()) {
-            var socket: Socket? = null
-            try {
-                socket = Socket()
-                socket.tcpNoDelay = true
-                socket.soTimeout = 5000
-                socket.connect(InetSocketAddress("127.0.0.1", AA_PORT_LOCAL), 2000)
-                onStatusChanged("✔ Terhubung ke Server Lokal Android Auto (5277)")
-            } catch (_: Exception) {
+            if (activeTransport != null && activeTransport!!.isConnected) {
+                // Sesi USB, Wireless WPP, atau transport lain sedang aktif
                 try {
-                    socket?.close()
-                } catch (_: Exception) {}
-                socket = null
-
-                try {
-                    if (serverSocket == null || serverSocket!!.isClosed) {
-                        serverSocket = ServerSocket().apply {
-                            reuseAddress = true
-                            bind(InetSocketAddress("0.0.0.0", AA_PORT_INCOMING))
-                        }
-                    }
-                    serverSocket?.soTimeout = 1500
-                    onStatusChanged("Menunggu Server Unit Kepala Android Auto (127.0.0.1:5277)...")
-                    socket = serverSocket?.accept()
-                    socket?.tcpNoDelay = true
-                    onStatusChanged("✔ Android Auto terhubung via Port 5288!")
-                } catch (_: Exception) {}
+                    Thread.sleep(1500)
+                } catch (_: InterruptedException) {
+                    break
+                }
+                continue
             }
 
-            if (socket != null && socket.isConnected) {
-                activeSocket = socket
+            // Opsi: Jika dikonfigurasi targetHost khusus (misal pengembang menguji mode Head Unit Server Developer)
+            if (isRemote) {
+                var socket: Socket? = null
                 try {
-                    runSession(socket)
-                } catch (e: Exception) {
-                    if (isRunning.get()) {
-                        Log.w(TAG, "Sesi AA berakhir: ${e.message}")
-                        onStatusChanged("Sesi AA terputus (${e.message}). Menyambungkan ulang...")
-                    }
-                } finally {
-                    isInputChannelOpen = false
-                    isVideoStreaming = false
-                    releaseHwDecoder()
-                    try {
-                        socket.close()
-                    } catch (_: Exception) {}
-                    activeSocket = null
+                    socket = Socket()
+                    socket.tcpNoDelay = true
+                    socket.soTimeout = 12000
+                    socket.connect(InetSocketAddress(targetHost, AA_PORT_LOCAL), 2500)
+                    Log.i(TAG, "✔ Terhubung ke Server Android Auto Remote ($hostLabel:5277)")
+                    onStatusChanged("✔ Terhubung ke Server Android Auto ($hostLabel:5277)")
+                    val transport = AaSocketTransport(socket)
+                    attachTransport(transport)
+                } catch (_: Exception) {
+                    try { socket?.close() } catch (_: Exception) {}
                 }
             }
 
             if (isRunning.get()) {
                 try {
-                    Thread.sleep(1000)
+                    Thread.sleep(2000)
                 } catch (_: InterruptedException) {
                     break
                 }
@@ -330,12 +398,12 @@ class AaHeadlessReceiver(
         }
     }
 
-    private fun runSession(socket: Socket) {
+    private fun runSession(transport: AaProjectionTransport) {
         val tls = AaTlsEngine(context)
         tlsEngine = tls
 
-        val dIn = DataInputStream(socket.getInputStream())
-        val out = socket.getOutputStream()
+        val dIn = DataInputStream(transport.inputStream)
+        val out = transport.outputStream
         rawOut = out
         rxBuffers.clear()
         decodedFrameCount = 0L
@@ -343,7 +411,7 @@ class AaHeadlessReceiver(
         audioSessionId = 0
 
         // 1. Kirim Version Request (Major 1, Minor 1 - persis WayXAuto l.java)
-        onStatusChanged("Handshake protokol AAP v1.1...")
+        onStatusChanged("Handshake protokol AAP v1.1 via ${transport.name}...")
         val verReq = byteArrayOf(0x00, 0x01, 0x00, 0x01, 0x00, 0x01)
         sendRawFrame(out, CH_CONTROL, FLAG_BULK, verReq)
 
@@ -351,8 +419,11 @@ class AaHeadlessReceiver(
         val header = ByteArray(4)
         val totalLenBuf = ByteArray(4)
 
-        while (isRunning.get() && !socket.isClosed) {
-            dIn.readFully(header)
+        while (isRunning.get() && transport.isConnected) {
+            val b0 = dIn.read()
+            if (b0 == -1) break
+            header[0] = b0.toByte()
+            dIn.readFully(header, 1, 3)
             val ch = header[0].toInt() and 0xFF
             val flags = header[1].toInt() and 0xFF
             val len = ((header[2].toInt() and 0xFF) shl 8) or (header[3].toInt() and 0xFF)
@@ -364,7 +435,9 @@ class AaHeadlessReceiver(
             }
 
             val payload = ByteArray(len)
-            dIn.readFully(payload)
+            if (len > 0) {
+                dIn.readFully(payload)
+            }
 
             val decrypted = if ((flags and FLAG_ENCRYPTED) != 0) {
                 tls.decrypt(payload)
@@ -456,7 +529,9 @@ class AaHeadlessReceiver(
                     sendRawFrame(out, CH_CONTROL, FLAG_BULK, frame)
                 }
                 if (tls.isHandshakeFinished) {
-                    activeSocket?.soTimeout = 0
+                    try {
+                        activeSocket?.soTimeout = 0
+                    } catch (_: Exception) {}
                     onStatusChanged("✔ Enkripsi TLS Android Auto Aktif!")
                     val authComplete = AaProto.encode { writeVarint(1, 0) }
                     val frame = ByteBuffer.allocate(2 + authComplete.size)
@@ -485,9 +560,11 @@ class AaHeadlessReceiver(
             }
             0x000F -> { // BYEBYE_REQUEST (`d0.java` lines 253-258)
                 sendEncryptedMessage(CH_CONTROL, false, 0x0010, ByteArray(0))
+                activeTransport?.close()
                 activeSocket?.close()
             }
             0x0010 -> { // BYEBYE_RESPONSE (`d0.java` lines 259-261)
+                activeTransport?.close()
                 activeSocket?.close()
             }
             0x0012 -> { // AUDIO_FOCUS_REQUEST (`d0.java` lines 264-272)
@@ -659,7 +736,7 @@ class AaHeadlessReceiver(
     }
 
     fun sendKey(keyCode: Int) {
-        if (!isRunning.get() || activeSocket == null) return
+        if (!isRunning.get() || activeTransport == null) return
         inputExecutor.execute {
             try {
                 val nowNs = System.nanoTime()
@@ -670,7 +747,7 @@ class AaHeadlessReceiver(
     }
 
     fun sendRotary(delta: Int) {
-        if (!isRunning.get() || activeSocket == null) return
+        if (!isRunning.get() || activeTransport == null) return
         inputExecutor.execute {
             try {
                 val nowNs = System.nanoTime()
@@ -689,7 +766,7 @@ class AaHeadlessReceiver(
     }
 
     fun sendTouch(normX: Float, normY: Float, action: Int) {
-        if (!isRunning.get() || activeSocket == null) return
+        if (!isRunning.get() || activeTransport == null) return
         val x = (normX.coerceIn(0f, 1f) * OmowayViewportConfig.aaActiveWidth).toInt()
         val y = (normY.coerceIn(0f, 1f) * OmowayViewportConfig.aaActiveHeight).toInt()
         inputExecutor.execute {
@@ -713,7 +790,7 @@ class AaHeadlessReceiver(
 
     fun sendNightMode(isNight: Boolean) {
         isNightModeActive = isNight
-        if (!isRunning.get() || activeSocket == null) return
+        if (!isRunning.get() || activeTransport == null) return
         inputExecutor.execute {
             try {
                 val nightEvent = AaProto.encode {
@@ -830,14 +907,14 @@ class AaHeadlessReceiver(
                 }
             }
 
-            // Head Unit Metadata (`d0.java` lines 370-379)
-            writeString(2, "SDMV")
-            writeString(3, "WayXAuto")
+            // Head Unit Metadata konsisten dengan WPP Bluetooth ("UMOX", "Universal HU")
+            writeString(2, "UMOX")
+            writeString(3, "Universal HU")
             writeString(4, "2026")
-            writeString(5, "SDMV-WAYXAUTO")
+            writeString(5, "UMOX-001")
             writeVarint(6, 0)
-            writeString(7, "SDMV")
-            writeString(8, "WayXAuto")
+            writeString(7, "UMOX")
+            writeString(8, "Universal HU")
             writeString(9, "1")
             writeString(10, "1.0")
             writeVarint(11, 0)
