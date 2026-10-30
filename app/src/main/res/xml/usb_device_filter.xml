@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Google Android Open Accessory (AOA) Mode -->
+    <usb-device vendor-id="6353" product-id="11520" />  <!-- 0x18D1:0x2D00 accessory -->
+    <usb-device vendor-id="6353" product-id="11521" />  <!-- 0x18D1:0x2D01 accessory + ADB -->
+    <usb-device vendor-id="6353" product-id="11524" />  <!-- 0x18D1:0x2D04 accessory + audio -->
+    <usb-device vendor-id="6353" product-id="11525" />  <!-- 0x18D1:0x2D05 accessory + audio + ADB -->
+
+    <!-- Generic Android Phone vendor / communication classes before switching to AOA -->
+    <usb-device class="255" subclass="255" protocol="0" />
+    <usb-device class="255" subclass="66" protocol="1" />   <!-- ADB -->
+    <usb-device class="6" subclass="1" protocol="1" />      <!-- PTP -->
+    <usb-device class="224" subclass="1" protocol="3" />    <!-- RNDIS tethering -->
+    <usb-device class="239" subclass="4" protocol="1" />    <!-- IAD -->
+    <usb-device class="8" subclass="6" protocol="1" />      <!-- MTP over mass storage -->
+</resources>
