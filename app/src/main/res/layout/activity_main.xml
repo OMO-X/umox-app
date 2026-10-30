@@ -575,11 +575,522 @@
                     android:insetTop="0dp"
                     android:insetBottom="0dp"
                     android:paddingHorizontal="4dp"
-                    android:text="🌓 Tema"
+                    android:text="☀️ Siang"
                     android:textColor="#00E5FF"
                     android:textSize="11sp"
                     app:backgroundTint="#141E2B"
                     app:cornerRadius="10dp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- ==================== 2B. KALIBRASI MARGIN HUD & BOOST ANTI-REDUP OMOWAY ==================== -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:background="@drawable/bg_glass_card"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <!-- BAGIAN A: PENGATURAN MARGIN AMAN HUD MOTOR -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:layout_marginBottom="6dp">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="📐 MARGIN AMAN HUD SPEEDOMETER"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13sp"
+                        android:fontFamily="sans-serif-black"
+                        android:letterSpacing="0.04" />
+
+                    <TextView
+                        android:id="@+id/tvMarginSummary"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Aktif: Area 840×270 (Kanan 120, Atas 45, Bawah 45)"
+                        android:textColor="#8B949E"
+                        android:textSize="11sp" />
+                </LinearLayout>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnToggleSafeMargins"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="34dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingHorizontal="12dp"
+                    android:text="✔ AKTIF"
+                    android:textColor="#00E676"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#122822"
+                    app:cornerRadius="9dp"
+                    app:strokeColor="#1F4B3E"
+                    app:strokeWidth="1dp" />
+            </LinearLayout>
+
+            <!-- Preset Cepat Margin -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginBottom="10dp">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnMarginPresetDefault"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="34dp"
+                    android:layout_marginEnd="4dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingHorizontal="4dp"
+                    android:text="Standar HUD"
+                    android:textColor="#00E5FF"
+                    android:textSize="10.5sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#122230"
+                    app:cornerRadius="8dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnMarginPresetExtra"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="34dp"
+                    android:layout_marginEnd="4dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingHorizontal="4dp"
+                    android:text="Ekstra Lega"
+                    android:textColor="#E6EDF3"
+                    android:textSize="10.5sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#161F2C"
+                    app:cornerRadius="8dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnMarginPresetFull"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="34dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingHorizontal="4dp"
+                    android:text="Full 960×360"
+                    android:textColor="#8B949E"
+                    android:textSize="10.5sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#161F2C"
+                    app:cornerRadius="8dp" />
+            </LinearLayout>
+
+            <!-- Slider Kustom Margin (Kanan, Bawah, Atas, Kiri) -->
+            <LinearLayout
+                android:id="@+id/layoutMarginSliders"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="14dp"
+                android:background="@drawable/bg_glass_inner"
+                android:orientation="vertical"
+                android:padding="12dp">
+
+                <!-- Margin Kanan (Hindari 0 km/h) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Margin Kanan (Hindari 0 km/h)"
+                        android:textColor="#C9D1D9"
+                        android:textSize="11sp" />
+                    <TextView
+                        android:id="@+id/tvMarginRightVal"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="120 px"
+                        android:textColor="#00E5FF"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+                <SeekBar
+                    android:id="@+id/seekMarginRight"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:max="240"
+                    android:progress="120"
+                    android:progressTint="#00E5FF"
+                    android:thumbTint="#00E5FF" />
+
+                <!-- Margin Bawah (Hindari Baterai 93% & Status) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Margin Bawah (Hindari Baterai &amp; Bar)"
+                        android:textColor="#C9D1D9"
+                        android:textSize="11sp" />
+                    <TextView
+                        android:id="@+id/tvMarginBottomVal"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="45 px"
+                        android:textColor="#00E5FF"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+                <SeekBar
+                    android:id="@+id/seekMarginBottom"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:max="120"
+                    android:progress="45"
+                    android:progressTint="#00E5FF"
+                    android:thumbTint="#00E5FF" />
+
+                <!-- Margin Atas (Hindari Jam 08:44 & Ikon Atas) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Margin Atas (Hindari Jam &amp; Ikon)"
+                        android:textColor="#C9D1D9"
+                        android:textSize="11sp" />
+                    <TextView
+                        android:id="@+id/tvMarginTopVal"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="45 px"
+                        android:textColor="#00E5FF"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+                <SeekBar
+                    android:id="@+id/seekMarginTop"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:max="120"
+                    android:progress="45"
+                    android:progressTint="#00E5FF"
+                    android:thumbTint="#00E5FF" />
+
+                <!-- Margin Kiri (Opsional) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Margin Kiri"
+                        android:textColor="#C9D1D9"
+                        android:textSize="11sp" />
+                    <TextView
+                        android:id="@+id/tvMarginLeftVal"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="0 px"
+                        android:textColor="#00E5FF"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+                <SeekBar
+                    android:id="@+id/seekMarginLeft"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:max="160"
+                    android:progress="0"
+                    android:progressTint="#00E5FF"
+                    android:thumbTint="#00E5FF" />
+            </LinearLayout>
+
+            <!-- BAGIAN B: BOOST KECERAHAN & KONTRAS (LAWAN OVERLAY GELAP OMOWAY) -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:layout_marginBottom="6dp">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="☀️ BOOST ANTI-REDUP (LAWAN OVERLAY OMOWAY)"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13sp"
+                        android:fontFamily="sans-serif-black"
+                        android:letterSpacing="0.04" />
+
+                    <TextView
+                        android:id="@+id/tvBoostSummary"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Menaikkan Gamma, Brightness, Contrast &amp; Warna di GPU"
+                        android:textColor="#8B949E"
+                        android:textSize="11sp" />
+                </LinearLayout>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnToggleColorBoost"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="34dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingHorizontal="12dp"
+                    android:text="☀️ AKTIF"
+                    android:textColor="#00E676"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#122822"
+                    app:cornerRadius="9dp"
+                    app:strokeColor="#1F4B3E"
+                    app:strokeWidth="1dp" />
+            </LinearLayout>
+
+            <!-- Preset Cepat Boost Siang -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginBottom="10dp">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnBoostPresetDay"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="34dp"
+                    android:layout_marginEnd="4dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingHorizontal="4dp"
+                    android:text="☀️ Siang Terang"
+                    android:textColor="#00E676"
+                    android:textSize="10.5sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#122822"
+                    app:cornerRadius="8dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnBoostPresetMax"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="34dp"
+                    android:layout_marginEnd="4dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingHorizontal="4dp"
+                    android:text="🔥 Terik Maksimal"
+                    android:textColor="#FFB300"
+                    android:textSize="10.5sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#2B1F11"
+                    app:cornerRadius="8dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnBoostPresetOff"
+                    style="@style/Widget.Material3.Button.TonalButton"
+                    android:layout_width="0dp"
+                    android:layout_height="34dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingHorizontal="4dp"
+                    android:text="Normal (0%)"
+                    android:textColor="#8B949E"
+                    android:textSize="10.5sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="#161F2C"
+                    app:cornerRadius="8dp" />
+            </LinearLayout>
+
+            <!-- Slider Kustom GPU Color/Brightness/Contrast/Gamma -->
+            <LinearLayout
+                android:id="@+id/layoutBoostSliders"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_glass_inner"
+                android:orientation="vertical"
+                android:padding="12dp">
+
+                <!-- Angkat Bayangan / Gamma Lift (Paling efektif melawan overlay gelap transparan!) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Angkat Bayangan (Anti-Overlay Gelap)"
+                        android:textColor="#C9D1D9"
+                        android:textSize="11sp" />
+                    <TextView
+                        android:id="@+id/tvBoostGammaVal"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="+32% (γ 0.68)"
+                        android:textColor="#00E676"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+                <SeekBar
+                    android:id="@+id/seekBoostGamma"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:max="55"
+                    android:progress="32"
+                    android:progressTint="#00E676"
+                    android:thumbTint="#00E676" />
+
+                <!-- Kecerahan (Brightness) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Kecerahan (Brightness)"
+                        android:textColor="#C9D1D9"
+                        android:textSize="11sp" />
+                    <TextView
+                        android:id="@+id/tvBoostBrightnessVal"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="+14%"
+                        android:textColor="#00E676"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+                <SeekBar
+                    android:id="@+id/seekBoostBrightness"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:max="45"
+                    android:progress="14"
+                    android:progressTint="#00E676"
+                    android:thumbTint="#00E676" />
+
+                <!-- Kontras (Contrast) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Kontras Teks &amp; Jalan (Contrast)"
+                        android:textColor="#C9D1D9"
+                        android:textSize="11sp" />
+                    <TextView
+                        android:id="@+id/tvBoostContrastVal"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="132%"
+                        android:textColor="#00E676"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+                <SeekBar
+                    android:id="@+id/seekBoostContrast"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:max="90"
+                    android:progress="32"
+                    android:progressTint="#00E676"
+                    android:thumbTint="#00E676" />
+
+                <!-- Ketajaman Warna (Saturation) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Ketajaman Warna Peta (Saturation)"
+                        android:textColor="#C9D1D9"
+                        android:textSize="11sp" />
+                    <TextView
+                        android:id="@+id/tvBoostSaturationVal"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="135%"
+                        android:textColor="#00E676"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+                <SeekBar
+                    android:id="@+id/seekBoostSaturation"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:max="90"
+                    android:progress="35"
+                    android:progressTint="#00E676"
+                    android:thumbTint="#00E676" />
             </LinearLayout>
         </LinearLayout>
 

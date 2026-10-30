@@ -27,6 +27,7 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.View
 import android.view.WindowManager
+import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -126,6 +127,7 @@ class MainActivity : AppCompatActivity() {
         AppConfig.loadFromPreferences(this)
         initManagers()
         setupLivePreviewTexture()
+        setupViewportAndBoostControls()
         setupClickListeners()
         checkAndRequestPermissions()
 
@@ -304,8 +306,17 @@ class MainActivity : AppCompatActivity() {
         binding.textureLivePreview.setOnTouchListener { view, event ->
             val receiver = ScreenCastService.activeAaReceiver
             if (receiver != null && view.width > 0 && view.height > 0) {
-                val normX = (event.x / view.width.toFloat()).coerceIn(0f, 1f)
-                val normY = (event.y / view.height.toFloat()).coerceIn(0f, 1f)
+                val outW = OmowayViewportConfig.outputWidth.toFloat()
+                val outH = OmowayViewportConfig.outputHeight.toFloat()
+                val leftFrac = OmowayViewportConfig.contentLeft / outW
+                val topFrac = (if (OmowayViewportConfig.useClusterSafeMargins) OmowayViewportConfig.marginTop else 0) / outH
+                val widthFrac = (OmowayViewportConfig.contentWidth / outW).coerceAtLeast(0.2f)
+                val heightFrac = (OmowayViewportConfig.contentHeight / outH).coerceAtLeast(0.2f)
+
+                val rawX = event.x / view.width.toFloat()
+                val rawY = event.y / view.height.toFloat()
+                val normX = ((rawX - leftFrac) / widthFrac).coerceIn(0f, 1f)
+                val normY = ((rawY - topFrac) / heightFrac).coerceIn(0f, 1f)
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         view.parent?.requestDisallowInterceptTouchEvent(true)
@@ -323,6 +334,236 @@ class MainActivity : AppCompatActivity() {
             } else {
                 false
             }
+        }
+    }
+
+    private var isUpdatingSlidersProgrammatically = false
+
+    private fun setupViewportAndBoostControls() {
+        syncViewportAndBoostUiFromConfig()
+
+        // 1. Toggle Margin Aman HUD Aktif / Nonaktif
+        binding.btnToggleSafeMargins.setOnClickListener {
+            OmowayViewportConfig.useClusterSafeMargins = !OmowayViewportConfig.useClusterSafeMargins
+            AppConfig.saveViewportAndBoostSettings(this)
+            syncViewportAndBoostUiFromConfig()
+            ScreenCastService.requestImmediateKeyFrame()
+            appendLog(
+                if (OmowayViewportConfig.useClusterSafeMargins) {
+                    "📐 Margin Aman HUD diaktifkan (${OmowayViewportConfig.contentWidth}×${OmowayViewportConfig.contentHeight})."
+                } else {
+                    "📐 Margin HUD dinonaktifkan (Layar Penuh 960×360)."
+                }
+            )
+        }
+
+        // Preset Margin: Standar HUD Omoway (Kanan 120, Atas 45, Bawah 45, Kiri 0)
+        binding.btnMarginPresetDefault.setOnClickListener {
+            OmowayViewportConfig.useClusterSafeMargins = true
+            OmowayViewportConfig.marginRight = 120
+            OmowayViewportConfig.marginBottom = 45
+            OmowayViewportConfig.marginTop = 45
+            OmowayViewportConfig.marginLeft = 0
+            AppConfig.saveViewportAndBoostSettings(this)
+            syncViewportAndBoostUiFromConfig()
+            ScreenCastService.requestImmediateKeyFrame()
+            appendLog("📐 Preset Margin Standar HUD Omoway diterapkan (Kanan 120, Atas 45, Bawah 45).")
+        }
+
+        // Preset Margin: Ekstra Lega (Kanan 145, Atas 52, Bawah 55, Kiri 18)
+        binding.btnMarginPresetExtra.setOnClickListener {
+            OmowayViewportConfig.useClusterSafeMargins = true
+            OmowayViewportConfig.marginRight = 145
+            OmowayViewportConfig.marginBottom = 55
+            OmowayViewportConfig.marginTop = 52
+            OmowayViewportConfig.marginLeft = 18
+            AppConfig.saveViewportAndBoostSettings(this)
+            syncViewportAndBoostUiFromConfig()
+            ScreenCastService.requestImmediateKeyFrame()
+            appendLog("📐 Preset Margin Ekstra Lega diterapkan (Kanan 145, Atas 52, Bawah 55, Kiri 18).")
+        }
+
+        // Preset Margin: Layar Penuh 960x360 (Nonaktif)
+        binding.btnMarginPresetFull.setOnClickListener {
+            OmowayViewportConfig.useClusterSafeMargins = false
+            AppConfig.saveViewportAndBoostSettings(this)
+            syncViewportAndBoostUiFromConfig()
+            ScreenCastService.requestImmediateKeyFrame()
+            appendLog("📐 Mode Layar Penuh 960×360 diterapkan (Margin Nonaktif).")
+        }
+
+        val marginSeekListener = object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (!fromUser || isUpdatingSlidersProgrammatically) return
+                OmowayViewportConfig.useClusterSafeMargins = true
+                when (seekBar?.id) {
+                    binding.seekMarginRight.id -> OmowayViewportConfig.marginRight = progress
+                    binding.seekMarginBottom.id -> OmowayViewportConfig.marginBottom = progress
+                    binding.seekMarginTop.id -> OmowayViewportConfig.marginTop = progress
+                    binding.seekMarginLeft.id -> OmowayViewportConfig.marginLeft = progress
+                }
+                syncViewportAndBoostUiFromConfig(skipSliders = true)
+                ScreenCastService.requestImmediateKeyFrame()
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                AppConfig.saveViewportAndBoostSettings(this@MainActivity)
+                ScreenCastService.requestImmediateKeyFrame()
+            }
+        }
+
+        binding.seekMarginRight.setOnSeekBarChangeListener(marginSeekListener)
+        binding.seekMarginBottom.setOnSeekBarChangeListener(marginSeekListener)
+        binding.seekMarginTop.setOnSeekBarChangeListener(marginSeekListener)
+        binding.seekMarginLeft.setOnSeekBarChangeListener(marginSeekListener)
+
+        // 2. Toggle Boost Anti-Redup (Lawan Overlay Gelap Omoway)
+        binding.btnToggleColorBoost.setOnClickListener {
+            OmowayViewportConfig.colorBoostEnabled = !OmowayViewportConfig.colorBoostEnabled
+            AppConfig.saveViewportAndBoostSettings(this)
+            syncViewportAndBoostUiFromConfig()
+            ScreenCastService.requestImmediateKeyFrame()
+            appendLog(
+                if (OmowayViewportConfig.colorBoostEnabled) {
+                    "☀️ Boost Anti-Redup GPU diaktifkan (melawan overlay gelap Omoway)."
+                } else {
+                    "○ Boost Anti-Redup GPU dinonaktifkan (warna standar)."
+                }
+            )
+        }
+
+        // Preset Boost: Siang Terang (Rekomendasi)
+        binding.btnBoostPresetDay.setOnClickListener {
+            OmowayViewportConfig.colorBoostEnabled = true
+            OmowayViewportConfig.boostGamma = 0.68f
+            OmowayViewportConfig.boostBrightness = 0.14f
+            OmowayViewportConfig.boostContrast = 1.32f
+            OmowayViewportConfig.boostSaturation = 1.35f
+            AppConfig.saveViewportAndBoostSettings(this)
+            syncViewportAndBoostUiFromConfig()
+            ScreenCastService.activeAaReceiver?.sendNightMode(false)
+            ScreenCastService.requestImmediateKeyFrame()
+            appendLog("☀️ Preset Siang Terang diterapkan (Gamma 0.68, Brightness +14%, Contrast 132%, Saturation 135% + Peta Siang).")
+        }
+
+        // Preset Boost: Matahari Terik Maksimal
+        binding.btnBoostPresetMax.setOnClickListener {
+            OmowayViewportConfig.colorBoostEnabled = true
+            OmowayViewportConfig.boostGamma = 0.55f
+            OmowayViewportConfig.boostBrightness = 0.24f
+            OmowayViewportConfig.boostContrast = 1.48f
+            OmowayViewportConfig.boostSaturation = 1.55f
+            AppConfig.saveViewportAndBoostSettings(this)
+            syncViewportAndBoostUiFromConfig()
+            ScreenCastService.activeAaReceiver?.sendNightMode(false)
+            ScreenCastService.requestImmediateKeyFrame()
+            appendLog("🔥 Preset Matahari Terik Maksimal diterapkan (Gamma 0.55, Brightness +24%, Contrast 148%, Saturation 155% + Peta Siang).")
+        }
+
+        // Preset Boost: Normal (0%)
+        binding.btnBoostPresetOff.setOnClickListener {
+            OmowayViewportConfig.colorBoostEnabled = false
+            AppConfig.saveViewportAndBoostSettings(this)
+            syncViewportAndBoostUiFromConfig()
+            ScreenCastService.requestImmediateKeyFrame()
+            appendLog("○ Preset Warna Standar (0% Boost) diterapkan.")
+        }
+
+        val boostSeekListener = object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (!fromUser || isUpdatingSlidersProgrammatically) return
+                OmowayViewportConfig.colorBoostEnabled = true
+                when (seekBar?.id) {
+                    binding.seekBoostGamma.id -> {
+                        OmowayViewportConfig.boostGamma = (1.0f - (progress / 100.0f)).coerceIn(0.45f, 1.0f)
+                    }
+                    binding.seekBoostBrightness.id -> {
+                        OmowayViewportConfig.boostBrightness = (progress / 100.0f).coerceIn(0.0f, 0.45f)
+                    }
+                    binding.seekBoostContrast.id -> {
+                        OmowayViewportConfig.boostContrast = (1.0f + (progress / 100.0f)).coerceIn(1.0f, 1.90f)
+                    }
+                    binding.seekBoostSaturation.id -> {
+                        OmowayViewportConfig.boostSaturation = (1.0f + (progress / 100.0f)).coerceIn(1.0f, 1.90f)
+                    }
+                }
+                syncViewportAndBoostUiFromConfig(skipSliders = true)
+                ScreenCastService.requestImmediateKeyFrame()
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                AppConfig.saveViewportAndBoostSettings(this@MainActivity)
+                ScreenCastService.requestImmediateKeyFrame()
+            }
+        }
+
+        binding.seekBoostGamma.setOnSeekBarChangeListener(boostSeekListener)
+        binding.seekBoostBrightness.setOnSeekBarChangeListener(boostSeekListener)
+        binding.seekBoostContrast.setOnSeekBarChangeListener(boostSeekListener)
+        binding.seekBoostSaturation.setOnSeekBarChangeListener(boostSeekListener)
+    }
+
+    private fun syncViewportAndBoostUiFromConfig(skipSliders: Boolean = false) {
+        val marginOn = OmowayViewportConfig.useClusterSafeMargins
+        val mr = OmowayViewportConfig.marginRight
+        val mb = OmowayViewportConfig.marginBottom
+        val mt = OmowayViewportConfig.marginTop
+        val ml = OmowayViewportConfig.marginLeft
+        val cw = OmowayViewportConfig.contentWidth
+        val ch = OmowayViewportConfig.contentHeight
+
+        binding.btnToggleSafeMargins.text = if (marginOn) "✔ AKTIF" else "○ NONAKTIF"
+        binding.btnToggleSafeMargins.setTextColor(
+            Color.parseColor(if (marginOn) "#00E676" else "#8B949E")
+        )
+        binding.tvMarginSummary.text = if (marginOn) {
+            "Aktif: Area ${cw}×${ch} (Kanan $mr, Bawah $mb, Atas $mt, Kiri $ml)"
+        } else {
+            "Nonaktif: Layar Penuh 960×360 (Tanpa Margin HUD)"
+        }
+
+        binding.tvMarginRightVal.text = "$mr px"
+        binding.tvMarginBottomVal.text = "$mb px"
+        binding.tvMarginTopVal.text = "$mt px"
+        binding.tvMarginLeftVal.text = "$ml px"
+
+        val boostOn = OmowayViewportConfig.colorBoostEnabled
+        val gammaLiftPct = ((1.0f - OmowayViewportConfig.boostGamma) * 100f).toInt().coerceIn(0, 55)
+        val brightPct = (OmowayViewportConfig.boostBrightness * 100f).toInt().coerceIn(0, 45)
+        val contrastPct = (OmowayViewportConfig.boostContrast * 100f).toInt().coerceIn(100, 190)
+        val satPct = (OmowayViewportConfig.boostSaturation * 100f).toInt().coerceIn(100, 190)
+
+        binding.btnToggleColorBoost.text = if (boostOn) "☀️ AKTIF" else "○ STANDAR"
+        binding.btnToggleColorBoost.setTextColor(
+            Color.parseColor(if (boostOn) "#00E676" else "#8B949E")
+        )
+        binding.tvBoostSummary.text = if (boostOn) {
+            "Aktif: Bayangan +$gammaLiftPct% · Terang +$brightPct% · Kontras $contrastPct% · Warna $satPct%"
+        } else {
+            "Nonaktif: Warna & Kecerahan Standar (Tanpa Boost)"
+        }
+
+        binding.tvBoostGammaVal.text = String.format(Locale.US, "+%d%% (γ %.2f)", gammaLiftPct, OmowayViewportConfig.boostGamma)
+        binding.tvBoostBrightnessVal.text = "+$brightPct%"
+        binding.tvBoostContrastVal.text = "$contrastPct%"
+        binding.tvBoostSaturationVal.text = "$satPct%"
+
+        if (!skipSliders) {
+            isUpdatingSlidersProgrammatically = true
+            binding.seekMarginRight.progress = mr.coerceIn(0, 240)
+            binding.seekMarginBottom.progress = mb.coerceIn(0, 120)
+            binding.seekMarginTop.progress = mt.coerceIn(0, 120)
+            binding.seekMarginLeft.progress = ml.coerceIn(0, 160)
+
+            binding.seekBoostGamma.progress = gammaLiftPct
+            binding.seekBoostBrightness.progress = brightPct
+            binding.seekBoostContrast.progress = (contrastPct - 100).coerceIn(0, 90)
+            binding.seekBoostSaturation.progress = (satPct - 100).coerceIn(0, 90)
+            isUpdatingSlidersProgrammatically = false
         }
     }
 
@@ -521,7 +762,9 @@ class MainActivity : AppCompatActivity() {
             if (receiver != null) {
                 val nextNight = !receiver.isNightModeActive
                 receiver.sendNightMode(nextNight)
-                appendLog("🌓 Tema Android Auto diubah ke: ${if (nextNight) "MALAM" else "SIANG"}")
+                binding.btnRemoteNightMode.text = if (nextNight) "🌙 Malam" else "☀️ Siang"
+                ScreenCastService.requestImmediateKeyFrame()
+                appendLog("🌓 Tema Peta Android Auto diubah ke: ${if (nextNight) "MALAM (Gelap)" else "SIANG (Terang)"}")
             } else {
                 Toast.makeText(this, "Mulai Android Auto terlebih dahulu", Toast.LENGTH_SHORT).show()
             }

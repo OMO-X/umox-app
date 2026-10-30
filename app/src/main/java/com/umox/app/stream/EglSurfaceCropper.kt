@@ -15,20 +15,48 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 
 /**
- * Konfigurasi geometri proyeksi widescreen Omoway (960x360) dan Android Auto (1280x720 dengan margin).
- * Persis mengadopsi konstanta `ho.java` dari WayXAuto.
+ * Konfigurasi geometri proyeksi widescreen Omoway (960x360), Margin Aman HUD,
+ * dan Rekayasa GPU Anti-Redup (Daylight / Overlay Boost).
  */
 object OmowayViewportConfig {
     @Volatile var outputWidth: Int = 960
     @Volatile var outputHeight: Int = 360
 
-    // Margin aman HUD speedometer Omoway (840x270 di dalam 960x360) atau Full-Bleed (960x360)
-    @Volatile var useClusterSafeMargins: Boolean = false
+    // 1. Pengaturan Margin Aman HUD Speedometer Omoway (Default AKTIF: 840x270 di dalam 960x360)
+    // Menghindari tumpang tindih dengan jam (kiri atas), baterai/status (bawah), dan angka km/h (kanan).
+    @Volatile var useClusterSafeMargins: Boolean = true
+    @Volatile var marginLeft: Int = 0
+    @Volatile var marginRight: Int = 120
+    @Volatile var marginTop: Int = 45
+    @Volatile var marginBottom: Int = 45
 
-    val contentLeft: Int get() = 0
-    val contentWidth: Int get() = if (useClusterSafeMargins) 840 else 960
-    val contentBottom: Int get() = if (useClusterSafeMargins) 45 else 0
-    val contentHeight: Int get() = if (useClusterSafeMargins) 270 else 360
+    val contentLeft: Int
+        get() = if (useClusterSafeMargins) marginLeft.coerceIn(0, 320) else 0
+
+    val contentBottom: Int
+        get() = if (useClusterSafeMargins) marginBottom.coerceIn(0, 140) else 0
+
+    val contentWidth: Int
+        get() = if (useClusterSafeMargins) {
+            (outputWidth - marginLeft.coerceIn(0, 320) - marginRight.coerceIn(0, 360)).coerceAtLeast(320)
+        } else {
+            outputWidth
+        }
+
+    val contentHeight: Int
+        get() = if (useClusterSafeMargins) {
+            (outputHeight - marginTop.coerceIn(0, 140) - marginBottom.coerceIn(0, 140)).coerceAtLeast(120)
+        } else {
+            outputHeight
+        }
+
+    // 2. Rekayasa GPU Anti-Overlay Gelap Omoway (Real-time GLSL Fragment Shader Boost)
+    // Melawan lapisan gelap transparan bawaan headunit Omoway agar tampilan siang hari tetap terang & tajam.
+    @Volatile var colorBoostEnabled: Boolean = true
+    @Volatile var boostBrightness: Float = 0.14f   // Range: -0.10f .. +0.45f
+    @Volatile var boostContrast: Float = 1.32f     // Range:  0.90f ..  1.90f
+    @Volatile var boostGamma: Float = 0.68f        // Range:  0.45f ..  1.10f (< 1.0 mengangkat shadow/midtone!)
+    @Volatile var boostSaturation: Float = 1.35f   // Range:  0.80f ..  1.90f
 
     // Dimensi sumber Android Auto (1280x720 dengan active UI 1120x360)
     @Volatile var aaSourceWidth: Int = 1280
@@ -174,8 +202,22 @@ class EglSurfaceCropper(encoderInputSurface: Surface) {
         val fs = compileShader(
             GLES20.GL_FRAGMENT_SHADER,
             "#extension GL_OES_EGL_image_external : require\n" +
-                "precision mediump float;uniform samplerExternalOES image;varying vec2 t;" +
-                "void main(){gl_FragColor=texture2D(image,t);}"
+                "precision mediump float;" +
+                "uniform samplerExternalOES image;" +
+                "uniform float uBrightness;" +
+                "uniform float uContrast;" +
+                "uniform float uGamma;" +
+                "uniform float uSaturation;" +
+                "varying vec2 t;" +
+                "void main(){" +
+                "vec4 c=texture2D(image,t);" +
+                "vec3 rgb=clamp(c.rgb,0.0,1.0);" +
+                "rgb=pow(rgb,vec3(uGamma));" +
+                "rgb=clamp((rgb-0.5)*uContrast+0.5+uBrightness,0.0,1.0);" +
+                "float luma=dot(rgb,vec3(0.2126,0.7152,0.0722));" +
+                "rgb=mix(vec3(luma),rgb,uSaturation);" +
+                "gl_FragColor=vec4(clamp(rgb,0.0,1.0),c.a);" +
+                "}"
         )
         GLES20.glAttachShader(glProgram, vs)
         GLES20.glAttachShader(glProgram, fs)
@@ -276,8 +318,15 @@ class EglSurfaceCropper(encoderInputSurface: Surface) {
                 releasePreviewSurface()
             } else {
                 EGL14.eglSwapInterval(eglDisplay, 0)
-                // Di layar HP tampilkan full-bleed agar memenuhi kartu preview
-                drawFrame(transformMatrix, cropX, cropY, w, h, useSafeMargins = false)
+                // Tampilkan margin & boost warna yang sama persis di preview layar HP agar pengguna bisa menyetel secara visual
+                drawFrame(
+                    transformMatrix,
+                    cropX,
+                    cropY,
+                    w,
+                    h,
+                    useSafeMargins = OmowayViewportConfig.useClusterSafeMargins
+                )
                 if (!EGL14.eglSwapBuffers(eglDisplay, previewEglSurface)) {
                     releasePreviewSurface()
                 }
@@ -324,6 +373,17 @@ class EglSurfaceCropper(encoderInputSurface: Surface) {
 
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(glProgram, "transform"), 1, false, transformMatrix, 0)
         GLES20.glUniform2f(GLES20.glGetUniformLocation(glProgram, "crop"), cropX, cropY)
+
+        val boostActive = OmowayViewportConfig.colorBoostEnabled
+        val brightness = if (boostActive) OmowayViewportConfig.boostBrightness else 0.0f
+        val contrast = if (boostActive) OmowayViewportConfig.boostContrast else 1.0f
+        val gamma = if (boostActive) OmowayViewportConfig.boostGamma else 1.0f
+        val saturation = if (boostActive) OmowayViewportConfig.boostSaturation else 1.0f
+
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(glProgram, "uBrightness"), brightness)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(glProgram, "uContrast"), contrast)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(glProgram, "uGamma"), gamma)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(glProgram, "uSaturation"), saturation)
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)

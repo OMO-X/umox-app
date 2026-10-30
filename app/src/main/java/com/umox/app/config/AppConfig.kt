@@ -2,6 +2,7 @@ package com.umox.app.config
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.umox.app.stream.OmowayViewportConfig
 
 /**
  * Konfigurasi umum jaringan, keamanan, dan identitas perangkat cluster motor.
@@ -70,7 +71,7 @@ object AppConfig {
     )
 
     /**
-     * Memuat target MAC yang tersimpan di HP.
+     * Memuat target MAC serta pengaturan Margin HUD & Boost Warna yang tersimpan di HP.
      */
     fun loadFromPreferences(context: Context) {
         val sp = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -78,6 +79,37 @@ object AppConfig {
         val savedP2p = sp.getString(KEY_P2P_MAC, "") ?: ""
         if (savedBle.isNotBlank()) targetBleMac = savedBle
         if (savedP2p.isNotBlank()) targetP2pMac = savedP2p
+
+        OmowayViewportConfig.useClusterSafeMargins = sp.getBoolean("pref_safe_margins_enabled", true)
+        OmowayViewportConfig.marginLeft = sp.getInt("pref_margin_left", 0)
+        OmowayViewportConfig.marginRight = sp.getInt("pref_margin_right", 120)
+        OmowayViewportConfig.marginTop = sp.getInt("pref_margin_top", 45)
+        OmowayViewportConfig.marginBottom = sp.getInt("pref_margin_bottom", 45)
+
+        OmowayViewportConfig.colorBoostEnabled = sp.getBoolean("pref_color_boost_enabled", true)
+        OmowayViewportConfig.boostBrightness = sp.getFloat("pref_boost_brightness", 0.14f)
+        OmowayViewportConfig.boostContrast = sp.getFloat("pref_boost_contrast", 1.32f)
+        OmowayViewportConfig.boostGamma = sp.getFloat("pref_boost_gamma", 0.68f)
+        OmowayViewportConfig.boostSaturation = sp.getFloat("pref_boost_saturation", 1.35f)
+    }
+
+    /**
+     * Menyimpan pengaturan Margin HUD & Rekayasa Warna/Kecerahan ke SharedPreferences.
+     */
+    fun saveViewportAndBoostSettings(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("pref_safe_margins_enabled", OmowayViewportConfig.useClusterSafeMargins)
+            .putInt("pref_margin_left", OmowayViewportConfig.marginLeft)
+            .putInt("pref_margin_right", OmowayViewportConfig.marginRight)
+            .putInt("pref_margin_top", OmowayViewportConfig.marginTop)
+            .putInt("pref_margin_bottom", OmowayViewportConfig.marginBottom)
+            .putBoolean("pref_color_boost_enabled", OmowayViewportConfig.colorBoostEnabled)
+            .putFloat("pref_boost_brightness", OmowayViewportConfig.boostBrightness)
+            .putFloat("pref_boost_contrast", OmowayViewportConfig.boostContrast)
+            .putFloat("pref_boost_gamma", OmowayViewportConfig.boostGamma)
+            .putFloat("pref_boost_saturation", OmowayViewportConfig.boostSaturation)
+            .apply()
     }
 
     /**

@@ -120,6 +120,11 @@ class ScreenCastService : Service() {
             onStateChangedCallback?.invoke()
         }
 
+        fun requestImmediateKeyFrame() {
+            currentInstance?.mediaEncoder?.requestKeyFrame()
+            currentInstance?.assetPlayer?.requestKeyFrame()
+        }
+
         @Volatile
         private var currentInstance: ScreenCastService? = null
 
@@ -152,6 +157,7 @@ class ScreenCastService : Service() {
     override fun onCreate() {
         super.onCreate()
         currentInstance = this
+        AppConfig.loadFromPreferences(applicationContext)
         createNotificationChannel()
         acquireWakeLock()
     }
@@ -381,10 +387,10 @@ class ScreenCastService : Service() {
                     mediaEncoder?.requestKeyFrame()
                     assetPlayer?.requestKeyFrame()
                 }
-                onClusterModeChanged = { modeStr ->
-                    val isNight = modeStr.contains("night", ignoreCase = true)
-                    aaReceiver?.sendNightMode(isNight)
-                    log("🌓 Sensor cahaya motor mengubah tema ke: ${if (isNight) "MALAM" else "SIANG"}")
+                onClusterModeChanged = { _ ->
+                    // Catatan Penting: Firmware Omoway selalu mengirim Msg 37 {"mode":"night"} meskipun siang hari (08:44 pagi).
+                    // Persis WayXAuto (q.java line 227), kita cukup membalas Msg 39 ke motor tanpa memaksa Google Maps menjadi gelap,
+                    // agar peta tetap terang & jelas di siang hari (pengguna dapat mengubah Siang/Malam lewat tombol 🌓 di UMOX).
                 }
                 onConnectionLost = {
                     isClusterCtrlConnected = false
