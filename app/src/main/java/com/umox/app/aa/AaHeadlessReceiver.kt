@@ -128,12 +128,19 @@ class AaHeadlessReceiver(
 
     fun stop() {
         isRunning.set(false)
-        try {
-            if (activeTransport != null) {
-                val bye = AaProto.encode { writeVarint(1, 1) }
-                sendEncryptedMessage(CH_CONTROL, false, 0x000F, bye)
-            }
-        } catch (_: Exception) {}
+        // Kirim "ByeBye" di thread terpisah (maks 300 ms) agar main thread tidak pernah
+        // terblokir oleh soket/TLS yang macet (penyebab ANR "not responding" di HP donor).
+        if (activeTransport != null || activeSocket != null) {
+            val byeThread = Thread({
+                try {
+                    if (tlsEngine?.isHandshakeFinished == true) {
+                        val bye = AaProto.encode { writeVarint(1, 1) }
+                        sendEncryptedMessage(CH_CONTROL, false, 0x000F, bye)
+                    }
+                } catch (_: Throwable) {}
+            }, "UMOX-AaBye").apply { isDaemon = true; start() }
+            try { byeThread.join(300) } catch (_: Exception) {}
+        }
 
         isInputChannelOpen = false
         isVideoStreaming = false

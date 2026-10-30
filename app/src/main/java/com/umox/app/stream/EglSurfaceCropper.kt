@@ -57,6 +57,7 @@ object OmowayViewportConfig {
     @Volatile var boostContrast: Float = 1.32f     // Range:  0.90f ..  1.90f
     @Volatile var boostGamma: Float = 0.68f        // Range:  0.45f ..  1.10f (< 1.0 mengangkat shadow/midtone!)
     @Volatile var boostSaturation: Float = 1.35f   // Range:  0.80f ..  1.90f
+    @Volatile var edgeSharpening: Float = 0.45f    // Range:  0.0f .. 1.0f (Adaptive GPU Edge Sharpening)
 
     // Dimensi sumber Android Auto (1280x720 dengan active UI 1120x360)
     @Volatile var aaSourceWidth: Int = 1280
@@ -208,9 +209,19 @@ class EglSurfaceCropper(encoderInputSurface: Surface) {
                 "uniform float uContrast;" +
                 "uniform float uGamma;" +
                 "uniform float uSaturation;" +
+                "uniform float uSharpen;" +
                 "varying vec2 t;" +
                 "void main(){" +
                 "vec4 c=texture2D(image,t);" +
+                "if (uSharpen > 0.01) {" +
+                "vec2 step = vec2(0.0010416, 0.002777);" +
+                "vec4 up = texture2D(image, t + vec2(0.0, -step.y));" +
+                "vec4 down = texture2D(image, t + vec2(0.0, step.y));" +
+                "vec4 left = texture2D(image, t + vec2(-step.x, 0.0));" +
+                "vec4 right = texture2D(image, t + vec2(step.x, 0.0));" +
+                "vec4 lap = 4.0 * c - (up + down + left + right);" +
+                "c = clamp(c + uSharpen * lap, 0.0, 1.0);" +
+                "}" +
                 "vec3 rgb=clamp(c.rgb,0.0,1.0);" +
                 "rgb=pow(rgb,vec3(uGamma));" +
                 "rgb=clamp((rgb-0.5)*uContrast+0.5+uBrightness,0.0,1.0);" +
@@ -384,6 +395,7 @@ class EglSurfaceCropper(encoderInputSurface: Surface) {
         GLES20.glUniform1f(GLES20.glGetUniformLocation(glProgram, "uContrast"), contrast)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(glProgram, "uGamma"), gamma)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(glProgram, "uSaturation"), saturation)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(glProgram, "uSharpen"), OmowayViewportConfig.edgeSharpening)
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)

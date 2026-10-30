@@ -217,6 +217,7 @@ object AppConfig {
         OmowayViewportConfig.boostContrast = sp.getFloat("pref_boost_contrast", 1.32f)
         OmowayViewportConfig.boostGamma = sp.getFloat("pref_boost_gamma", 0.68f)
         OmowayViewportConfig.boostSaturation = sp.getFloat("pref_boost_saturation", 1.35f)
+        OmowayViewportConfig.edgeSharpening = sp.getFloat("pref_edge_sharpening", 0.45f)
 
         joystickAsDpad = sp.getBoolean("pref_joystick_as_dpad", true)
         streamQualityLevel = sp.getInt("pref_stream_quality_level", 3).coerceIn(1, 5)
@@ -254,6 +255,7 @@ object AppConfig {
             .putFloat("pref_boost_contrast", OmowayViewportConfig.boostContrast)
             .putFloat("pref_boost_gamma", OmowayViewportConfig.boostGamma)
             .putFloat("pref_boost_saturation", OmowayViewportConfig.boostSaturation)
+            .putFloat("pref_edge_sharpening", OmowayViewportConfig.edgeSharpening)
             .apply()
     }
 

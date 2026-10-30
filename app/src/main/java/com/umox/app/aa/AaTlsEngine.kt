@@ -140,15 +140,28 @@ class AaTlsEngine(context: Context) {
      */
     @Synchronized
     fun encrypt(plainBytes: ByteArray): ByteArray {
+        // Jangan pernah enkripsi sebelum handshake TLS selesai: SSLEngine.wrap() akan
+        // mengembalikan OK tanpa mengonsumsi byte -> loop tak berujung (ANR di HP donor).
+        if (!isHandshakeFinished) {
+            throw SSLException("TLS handshake belum selesai, pesan dibatalkan")
+        }
         val wrap = ByteBuffer.wrap(plainBytes)
         val out = ByteArrayOutputStream(plainBytes.size + 64)
         val netBuf = ByteBuffer.allocate(engine.session.packetBufferSize)
 
+        var stalledRounds = 0
         while (wrap.hasRemaining()) {
             netBuf.clear()
             val res = engine.wrap(wrap, netBuf)
             if (res.status != SSLEngineResult.Status.OK) {
                 throw SSLException("TLS wrap failed: ${res.status}")
+            }
+            if (res.bytesConsumed() == 0) {
+                if (++stalledRounds > 4) {
+                    throw SSLException("TLS wrap macet (handshake=${res.handshakeStatus})")
+                }
+            } else {
+                stalledRounds = 0
             }
             out.write(netBuf.array(), 0, netBuf.position())
         }

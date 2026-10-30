@@ -39,13 +39,26 @@ object WifiDirectNetworkBinder {
 
         var bound = false
 
-        // 1. Coba bind via ConnectivityManager Network yang memiliki rute langsung ke 192.168.2.1 (persis WayXAuto t.java)
+        // 1. PRIORITAS UTAMA: Cari IP lokal di antarmuka subnet yang sama (misal 192.168.2.x pada p2p0).
+        // Wajib diikat (bind) ke interface lokal motor terlebih dahulu agar tidak dibajak oleh Hotspot Samsung (10.75.193.x).
+        try {
+            val targetPrefix = targetIp.substringBeforeLast('.', "")
+            if (targetPrefix.isNotEmpty()) {
+                val localMatch = findLocalSubnetAddress("$targetPrefix.")
+                if (localMatch != null) {
+                    socket.bind(InetSocketAddress(localMatch, 0))
+                    bound = true
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 2. Jika ada Network spesifik di ConnectivityManager yang rutenya benar-benar mengarah ke 192.168.2.x:
+        // HANYA ikat jika rutenya cocok (JANGAN pernah fallback ke sembarang Wi-Fi karena bisa mengikat ke Hotspot Samsung).
         if (context != null) {
             try {
                 val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
                 if (cm != null) {
                     var routeMatchedNet: Network? = null
-                    var fallbackWifiNet: Network? = null
 
                     for (net in cm.allNetworks) {
                         val caps = cm.getNetworkCapabilities(net) ?: continue
@@ -70,53 +83,18 @@ object WifiDirectNetworkBinder {
                                 } catch (_: Exception) {}
                             }
                         }
-
                         if (routeMatchedNet != null) break
-                        if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
-                            fallbackWifiNet = net
-                        } else if (fallbackWifiNet == null) {
-                            fallbackWifiNet = net
-                        }
                     }
 
-                    val chosenNet = routeMatchedNet ?: fallbackWifiNet
-                    if (chosenNet != null) {
+                    if (routeMatchedNet != null) {
                         try {
-                            chosenNet.bindSocket(socket)
+                            routeMatchedNet.bindSocket(socket)
                             bound = true
                         } catch (_: Exception) {}
                     }
                 }
             } catch (_: Exception) {}
         }
-
-        // 2. Fallback & penguat: Cari IP lokal di subnet yang sama (misal 192.168.2.x pada p2p-wlan0-0)
-        // dan bind local address apabila belum terikat ke rute spesifik.
-        try {
-            val targetPrefix = targetIp.substringBeforeLast('.', "")
-            if (targetPrefix.isNotEmpty()) {
-                val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
-                var localMatch: InetAddress? = null
-                for (nif in interfaces) {
-                    if (!nif.isUp || nif.isLoopback) continue
-                    val addrs = Collections.list(nif.inetAddresses)
-                    for (addr in addrs) {
-                        if (addr is Inet4Address) {
-                            val host = addr.hostAddress ?: continue
-                            if (host.startsWith("$targetPrefix.")) {
-                                localMatch = addr
-                                break
-                            }
-                        }
-                    }
-                    if (localMatch != null) break
-                }
-                if (localMatch != null && !socket.isBound) {
-                    socket.bind(InetSocketAddress(localMatch, 0))
-                    bound = true
-                }
-            }
-        } catch (_: Exception) {}
 
         socket.connect(InetSocketAddress(targetAddr, targetPort), connectTimeoutMs)
         return socket
